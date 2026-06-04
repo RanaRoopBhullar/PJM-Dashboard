@@ -335,25 +335,41 @@ function renderGas(gas) {
 
 function renderLoad(load) {
   const el = document.getElementById('load-panel');
-  if (!load || !load.length) {
+  if (!load || (!load.forecast?.length && !load.current_actual)) {
     el.innerHTML = '<div class="loading" style="font-size:11px;padding:10px;">Load forecast unavailable</div>';
     return;
   }
-  const recent = load.slice(-6);
-  const maxLoad = Math.max(...recent.map(r => Math.max(r.forecast || 0, r.actual || 0)));
-  el.innerHTML = recent.map(r => {
-    const hr   = new Date(r.hour).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
-    const fc   = r.forecast || 0;
-    const act  = r.actual   || 0;
-    const pct  = maxLoad > 0 ? (Math.max(fc,act)/maxLoad)*100 : 0;
-    const diff = act && fc ? act - fc : null;
-    return `<div class="load-row">
-      <span class="load-label">${hr}</span>
-      <span class="load-val" style="color:${fc>100000?'var(--red)':fc>85000?'var(--amber)':'var(--t1)'};">${fc>0?fmtK(fc)+'MW':'—'}</span>
-      <div class="load-bar-bg"><div class="load-bar-fill" style="width:${pct.toFixed(0)}%;"></div></div>
-      <span class="load-pct">${diff!==null?(diff>0?'<span style="color:var(--red)">+':'<span style="color:var(--green)">') + fmtK(diff)+'MW</span>':act>0?'<span style="color:var(--t2)">'+fmtK(act)+'MW</span>':''}</span>
+
+  // Show current actual at top if available
+  let html = '';
+  if (load.current_actual) {
+    const mw = load.current_actual;
+    const color = mw > 100000 ? 'var(--red)' : mw > 80000 ? 'var(--amber)' : 'var(--green)';
+    html += `<div style="padding:8px 10px;border-bottom:0.5px solid var(--border);display:flex;align-items:center;gap:8px;">
+      <span style="font-size:10px;color:var(--t2);">Current Load</span>
+      <span style="font-size:18px;font-weight:500;color:${color};">${fmtK(mw)} MW</span>
+      ${load.peak_forecast ? `<span style="font-size:10px;color:var(--t3);margin-left:auto;">Peak fcst: ${fmtK(load.peak_forecast)} MW</span>` : ''}
     </div>`;
-  }).join('');
+  }
+
+  // Show hourly forecast bars
+  if (load.forecast && load.forecast.length) {
+    const recent  = load.forecast.slice(-8);
+    const maxLoad = Math.max(...recent.map(r => r.mw || 0));
+    html += recent.map(r => {
+      const hr  = new Date(r.hour).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+      const mw  = r.mw || 0;
+      const pct = maxLoad > 0 ? (mw/maxLoad)*100 : 0;
+      const col = mw > 100000 ? 'var(--red)' : mw > 85000 ? 'var(--amber)' : 'var(--blue)';
+      return `<div class="load-row">
+        <span class="load-label">${hr}</span>
+        <span class="load-val">${mw > 0 ? fmtK(mw)+'MW' : '—'}</span>
+        <div class="load-bar-bg"><div class="load-bar-fill" style="width:${pct.toFixed(0)}%;background:${col};"></div></div>
+      </div>`;
+    }).join('');
+  }
+
+  el.innerHTML = html || '<div class="loading" style="font-size:11px;padding:10px;">No load data</div>';
 }
 
 function renderPreds(markets) {
