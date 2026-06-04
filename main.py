@@ -1,5 +1,6 @@
 """
 PJM Power Dashboard — Backend Server
+Uses rt_unverified_hrl_lmps for real-time data (published within minutes)
 """
 
 import os
@@ -40,6 +41,7 @@ def cache_set(key, data):
     _cache[key] = {"ts": datetime.now(timezone.utc).timestamp(), "data": data}
 
 def get_eastern_now():
+    # EDT = UTC-4, EST = UTC-5. Using UTC-4 for summer.
     return datetime.now(timezone.utc) - timedelta(hours=4)
 
 PJM_HUBS = [
@@ -65,32 +67,30 @@ async def fetch_lmps() -> list:
     used_hour = ""
 
     async with httpx.AsyncClient(timeout=20) as client:
-        for hours_back in range(0, 5):
-            try_et = now_et - timedelta(hours=hours_back)
-            # PJM expects format: "2026-06-04 11:00" with no leading zero issues
-            dt_str = try_et.strftime("%Y-%m-%d %H:00")
+        for hours_back in range(0, 6):
+            try_et  = now_et - timedelta(hours=hours_back)
+            # PJM date range filter: use a 1-hour window
+            start   = try_et.strftime("%Y-%m-%d %H:00")
+            end     = (try_et + timedelta(hours=1)).strftime("%Y-%m-%d %H:00")
 
-            # Use the correct PJM filter syntax from their API spec
-            params = {
-                "rowCount": "500",
-                "startRow": "1",
-                "fields": "datetime_beginning_ept,pnode_id,pnode_name,type,row_is_current,version_nbr,zone,zone,voltage,equipment,system_energy_price_rt,congestion_price_rt,marginal_loss_lmp_rt,total_lmp_rt,energy_lmp_rt",
-                "datetime_beginning_ept": dt_str,
-            }
-
-            r = await client.get(
-                f"{PJM_BASE}/rt_hrl_lmps",
-                params=params,
-                headers=headers
-            )
-
-            if r.status_code == 200:
-                data = r.json()
-                items = data.get("items", [])
-                if items:
-                    rows = items
-                    used_hour = dt_str
-                    break
+            # Try unverified feed first (most current), then verified
+            for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
+                params = {
+                    "rowCount":               "500",
+                    "startRow":               "1",
+                    "datetime_beginning_ept": start,
+                    "datetime_ending_ept":    end,
+                }
+                r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
+                if r.status_code == 200:
+                    data  = r.json()
+                    items = data.get("items", [])
+                    if items:
+                        rows      = items
+                        used_hour = start
+                        break
+            if rows:
+                break
 
     if not rows:
         return []
@@ -101,10 +101,10 @@ async def fetch_lmps() -> list:
         name = (row.get("pnode_name") or "").upper().strip()
         if name in PJM_HUBS and name not in seen:
             seen.add(name)
-            lmp    = float(row.get("total_lmp_rt") or 0)
-            energy = float(row.get("energy_lmp_rt") or row.get("system_energy_price_rt") or 0)
-            cong   = float(row.get("congestion_price_rt") or 0)
-            loss   = float(row.get("marginal_loss_lmp_rt") or 0)
+            lmp    = float(row.get("total_lmp_rt") or row.get("total_lmp") or 0)
+            energy = float(row.get("energy_lmp_rt") or row.get("system_energy_price_rt") or row.get("energy_lmp") or 0)
+            cong   = float(row.get("congestion_price_rt") or row.get("congestion_price") or 0)
+            loss   = float(row.get("marginal_loss_lmp_rt") or row.get("marginal_loss_lmp") or 0)
             results.append({
                 "name":       row.get("pnode_name"),
                 "type":       row.get("type", "Hub"),
@@ -131,29 +131,37 @@ async def fetch_intraday() -> list:
     if not PJM_API_KEY:
         return []
 
-    now_et = get_eastern_now()
-    # Get last 12 hours of Western Hub data
-    end_dt   = now_et.strftime("%Y-%m-%d %H:00")
-    start_dt = (now_et - timedelta(hours=12)).strftime("%Y-%m-%d %H:00")
+    now_et   = get_eastern_now()
+    start_dt = now_et.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:00")
+    end_dt   = (now_et + timedelta(hours=1)).strftime("%Y-%m-%d %H:00")
 
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
-    params = {
-        "rowCount": "24",
-        "startRow": "1",
-        "pnode_name": "WESTERN HUB",
-        "datetime_beginning_ept": start_dt,
-        "datetime_ending_ept": end_dt,
-    }
 
+    rows = []
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(f"{PJM_BASE}/rt_hrl_lmps", params=params, headers=headers)
-        if r.status_code != 200:
-            return []
-        data = r.json()
+        for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
+            params = {
+                "rowCount":               "24",
+                "startRow":               "1",
+                "pnode_name":             "WESTERN HUB",
+                "datetime_beginning_ept": start_dt,
+                "datetime_ending_ept":    end_dt,
+            }
+            r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
+            if r.status_code == 200:
+                items = r.json().get("items", [])
+                if items:
+                    rows = items
+                    break
 
-    rows = data.get("items", [])
     rows_sorted = sorted(rows, key=lambda x: x.get("datetime_beginning_ept", ""))
-    result = [{"hour": row.get("datetime_beginning_ept", ""), "lmp": round(float(row.get("total_lmp_rt") or 0), 2)} for row in rows_sorted]
+    result = [
+        {
+            "hour": row.get("datetime_beginning_ept", ""),
+            "lmp":  round(float(row.get("total_lmp_rt") or row.get("total_lmp") or 0), 2)
+        }
+        for row in rows_sorted
+    ]
 
     if result:
         cache_set("intraday", result)
@@ -165,30 +173,33 @@ async def fetch_lmps_debug() -> dict:
         return {"error": "no key"}
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
     now_et = get_eastern_now()
-    debug_info = {"eastern_now": now_et.strftime("%Y-%m-%d %H:%M"), "attempts": {}}
+    debug  = {"eastern_now": now_et.strftime("%Y-%m-%d %H:%M"), "attempts": {}}
 
     async with httpx.AsyncClient(timeout=20) as client:
         for hours_back in range(0, 4):
             try_et = now_et - timedelta(hours=hours_back)
-            dt_str = try_et.strftime("%Y-%m-%d %H:00")
-            params = {"rowCount": "5", "startRow": "1", "datetime_beginning_ept": dt_str}
-            r = await client.get(f"{PJM_BASE}/rt_hrl_lmps", params=params, headers=headers)
-            try:
-                data = r.json()
-            except Exception:
-                data = {"raw": r.text[:300]}
-            items = data.get("items", []) if isinstance(data, dict) else []
-            debug_info["attempts"][dt_str] = {
-                "status": r.status_code,
-                "total_rows": data.get("totalRows", "?") if isinstance(data, dict) else "?",
-                "item_count": len(items),
-                "sample_pnodes": [i.get("pnode_name") for i in items[:3]],
-            }
-    return debug_info
+            start  = try_et.strftime("%Y-%m-%d %H:00")
+            end    = (try_et + timedelta(hours=1)).strftime("%Y-%m-%d %H:00")
+            for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
+                params = {"rowCount": "3", "startRow": "1",
+                          "datetime_beginning_ept": start, "datetime_ending_ept": end}
+                r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
+                try:
+                    data = r.json()
+                except Exception:
+                    data = {"raw": r.text[:200]}
+                items = data.get("items", []) if isinstance(data, dict) else []
+                debug["attempts"][f"{feed}|{start}"] = {
+                    "status":       r.status_code,
+                    "total_rows":   data.get("totalRows", "?") if isinstance(data, dict) else "?",
+                    "item_count":   len(items),
+                    "sample_pnodes": [i.get("pnode_name") for i in items[:3]],
+                }
+    return debug
 
 
-POWER_KEYWORDS = ["electricity", "power", "energy", "grid", "PJM", "ERCOT", "utility",
-                  "natural gas", "coal", "solar", "wind", "megawatt", "kilowatt", "nuclear"]
+POWER_KEYWORDS = ["electricity", "power", "energy", "grid", "PJM", "ERCOT",
+                  "natural gas", "coal", "solar", "wind", "megawatt", "nuclear"]
 
 async def fetch_polymarket() -> list:
     cached = cache_get("polymarket")
@@ -235,7 +246,7 @@ RSS_FEEDS = [
 ]
 
 ENERGY_KEYWORDS = ["power", "energy", "electricity", "grid", "LMP", "capacity",
-                   "natural gas", "coal", "solar", "wind", "PJM", "FERC", "utility",
+                   "natural gas", "coal", "solar", "wind", "PJM", "FERC",
                    "megawatt", "transmission", "congestion", "renewable", "nuclear", "generation"]
 
 async def fetch_news() -> list:
@@ -251,7 +262,7 @@ async def fetch_news() -> list:
                 if r.status_code != 200:
                     continue
                 root = ET.fromstring(r.text)
-                ns = {"atom": "http://www.w3.org/2005/Atom"}
+                ns   = {"atom": "http://www.w3.org/2005/Atom"}
                 items = root.findall(".//item") or root.findall(".//atom:entry", ns)
                 for item in items[:12]:
                     title   = (item.findtext("title") or item.findtext("atom:title", namespaces=ns) or "").strip()
@@ -259,8 +270,7 @@ async def fetch_news() -> list:
                     pub     = (item.findtext("pubDate") or item.findtext("atom:updated", namespaces=ns) or "").strip()
                     link_el = item.find("atom:link", ns)
                     link    = item.findtext("link") or (link_el.get("href") if link_el is not None else "") or ""
-                    combined = (title + " " + desc).lower()
-                    if any(kw.lower() in combined for kw in ENERGY_KEYWORDS):
+                    if any(kw.lower() in (title + desc).lower() for kw in ENERGY_KEYWORDS):
                         articles.append({
                             "source":  source,
                             "title":   title,
@@ -271,11 +281,11 @@ async def fetch_news() -> list:
             except Exception:
                 continue
 
+    # Fallback: show all EIA items
     if not articles:
         async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
             try:
-                r = await client.get("https://www.eia.gov/rss/press_releases.xml",
-                                     headers={"User-Agent": "Mozilla/5.0"})
+                r    = await client.get("https://www.eia.gov/rss/press_releases.xml", headers={"User-Agent": "Mozilla/5.0"})
                 root = ET.fromstring(r.text)
                 for item in root.findall(".//item")[:10]:
                     articles.append({
@@ -329,10 +339,7 @@ async def api_news():
 @app.get("/api/all")
 async def api_all():
     lmps, intraday, markets, news = await asyncio.gather(
-        fetch_lmps(),
-        fetch_intraday(),
-        fetch_polymarket(),
-        fetch_news(),
+        fetch_lmps(), fetch_intraday(), fetch_polymarket(), fetch_news(),
         return_exceptions=True,
     )
     return JSONResponse({
