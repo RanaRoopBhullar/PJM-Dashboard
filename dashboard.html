@@ -206,7 +206,8 @@ function spark(vals){
 function renderMetrics(lmps){
   document.getElementById('metric-grid').innerHTML=lmps.slice(0,4).map(d=>{
     const cl=d.lmp>80?'hi':d.lmp>50?'up':'';
-    const da=daMap[d.name?.toUpperCase()];
+    const key=(d.name||'').toUpperCase().trim().replace(/\s+/g,' ');
+    const da=daMap[key];
     const spread=da?` DA$${fmt(da.lmp)}`:'';
     return `<div class="mc"><div class="mc-label">${d.name}</div><div class="mc-val ${cl}">$${fmt(d.lmp)}</div><div class="mc-sub">E:$${fmt(d.energy)} C:${d.congestion>=0?'+':''}$${fmt(d.congestion)}${spread}</div></div>`;
   }).join('');
@@ -218,7 +219,8 @@ function renderTable(lmps){
     const pc=d.lmp>90?'var(--red)':d.lmp>60?'var(--amber)':'var(--t1)';
     const cc=d.congestion>=0?'var(--red)':'var(--green)';
     const lc=d.loss>0.5?'var(--amber)':d.loss<-0.5?'var(--green)':'var(--t3)';
-    const da=daMap[d.name?.toUpperCase()];
+    const key=(d.name||'').toUpperCase().trim().replace(/\s+/g,' ');
+    const da=daMap[key];
     const daCell=da?`$${fmt(da.lmp)}`:'—';
     const spVal=da?d.lmp-da.lmp:null;
     const spCell=spVal!==null?`<span style="color:${spVal>5?'var(--red)':spVal<-5?'var(--green)':'var(--t2)'}">${spVal>=0?'+':''}$${fmt(spVal)}</span>`:'—';
@@ -351,7 +353,8 @@ async function loadAll(){
     if(d.da&&d.da.length){
       d.da.forEach(row=>{
         if(row.name&&row.lmp){
-          daMap[row.name.toUpperCase().trim()]={lmp:row.lmp,energy:row.energy||0,cong:row.cong||0};
+          const key = row.name.toUpperCase().trim().replace(/\s+/g,' ');
+          daMap[key]={lmp:row.lmp,energy:row.energy||0,cong:row.cong||0};
         }
       });
     }
