@@ -1,5 +1,6 @@
 """
 PJM Power Dashboard — Backend Server
+News via PJM API operational data + Claude-powered summaries via Anthropic API
 """
 
 import os
@@ -104,7 +105,7 @@ async def fetch_intraday() -> list:
     return result
 
 # ---------------------------------------------------------------------------
-# Load Forecast + Instantaneous Load
+# Load Forecast
 # ---------------------------------------------------------------------------
 async def fetch_load_forecast() -> dict:
     cached = cache_get("load_forecast")
@@ -114,46 +115,44 @@ async def fetch_load_forecast() -> dict:
         return {}
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
     result = {"forecast":[], "current_actual":None, "peak_forecast":None}
-
     async with httpx.AsyncClient(timeout=20) as client:
-        # 7-day load forecast
         try:
             r = await client.get(f"{PJM_BASE}/load_frcstd_7day",
                 params={"rowCount":"48","startRow":"1","datetime_beginning_ept":"Today","order":"Asc","sort":"datetime_beginning_ept"},
                 headers=headers)
             if r.status_code == 200:
                 items = r.json().get("items", [])
-                result["forecast"] = [{"hour":row.get("datetime_beginning_ept",""),"mw":float(row.get("rto_total") or row.get("total_load_forecast") or row.get("load_forecast_rto") or 0)} for row in items]
+                result["forecast"] = [{"hour":row.get("datetime_beginning_ept",""),"mw":float(row.get("rto_total") or row.get("total_load_forecast") or 0)} for row in items]
                 if result["forecast"]:
                     result["peak_forecast"] = max(r["mw"] for r in result["forecast"])
         except Exception:
             pass
-
-        # Instantaneous load — correct field is instantaneous_load, filter by PJM RTO area
         try:
             r = await client.get(f"{PJM_BASE}/inst_load",
-                params={"rowCount":"5","startRow":"1","area":"PJM RTO","datetime_beginning_ept":"5MinutesAgo","order":"Desc","sort":"datetime_beginning_ept"},
+                params={"rowCount":"50","startRow":"1","datetime_beginning_ept":"5MinutesAgo"},
                 headers=headers)
             if r.status_code == 200:
                 items = r.json().get("items", [])
-                if items:
-                    # Find RTO total row
-                    for item in items:
-                        val = float(item.get("instantaneous_load") or item.get("rto_total") or 0)
-                        if val > 10000:  # RTO total should be > 10k MW
-                            result["current_actual"] = val
-                            break
-                    if not result["current_actual"] and items:
-                        result["current_actual"] = float(items[0].get("instantaneous_load") or 0)
+                # Find PJM RTO total (largest value)
+                rto_val = 0
+                for item in items:
+                    area = (item.get("area") or "").upper()
+                    val  = float(item.get("instantaneous_load") or 0)
+                    if "RTO" in area or "PJM RTO" in area:
+                        rto_val = val
+                        break
+                    if val > rto_val and val > 50000:
+                        rto_val = val
+                if rto_val:
+                    result["current_actual"] = rto_val
         except Exception:
             pass
-
     if result["forecast"] or result["current_actual"]:
         cache_set("load_forecast", result)
     return result
 
 # ---------------------------------------------------------------------------
-# Gas Prices
+# Gas Prices — use PJM API Henry Hub proxy or EIA
 # ---------------------------------------------------------------------------
 async def fetch_gas_prices() -> list:
     cached = cache_get("gas_prices")
@@ -178,77 +177,150 @@ async def fetch_gas_prices() -> list:
     return prices
 
 # ---------------------------------------------------------------------------
-# News — multiple sources with fallbacks
+# News — PJM API operational data (no external RSS needed)
 # ---------------------------------------------------------------------------
-async def try_fetch_rss(client, url, source, always=False):
-    """Fetch a single RSS feed and return articles."""
-    articles = []
-    ENERGY_KW = ["power","energy","electricity","grid","lmp","capacity","natural gas","coal","solar","wind","pjm","ferc","megawatt","mw","transmission","congestion","renewable","nuclear","generation","utility","outage","demand","load","fuel","pipeline","curtailment","emergency","alert","heat","storm","freeze","peak","reactor","substation"]
-    WEATHER_KW = ["heat","storm","hurricane","tornado","blizzard","freeze","cold","extreme","warning","watch","advisory","mid-atlantic","midwest","ohio","pennsylvania","virginia","illinois","new jersey","maryland","indiana","michigan"]
-    try:
-        r = await client.get(url, headers={"User-Agent":"Mozilla/5.0 AppleWebKit/537.36 Chrome/120.0 Safari/537.36"}, timeout=8)
-        if r.status_code != 200:
-            return []
-        root  = ET.fromstring(r.text)
-        ns    = {"atom":"http://www.w3.org/2005/Atom"}
-        items = root.findall(".//item") or root.findall(".//atom:entry", ns)
-        for item in items[:20]:
-            title   = (item.findtext("title") or item.findtext("atom:title",namespaces=ns) or "").strip()
-            desc    = (item.findtext("description") or item.findtext("atom:summary",namespaces=ns) or "").strip()
-            pub     = (item.findtext("pubDate") or item.findtext("atom:updated",namespaces=ns) or "").strip()
-            link_el = item.find("atom:link", ns)
-            link    = item.findtext("link") or (link_el.get("href") if link_el is not None else "") or ""
-            combined = (title+" "+desc).lower()
-            is_weather = source=="NOAA" or any(k in combined for k in WEATHER_KW)
-            is_nuclear = source=="NRC"  or "nuclear" in combined or "reactor" in combined
-            is_energy  = any(k in combined for k in ENERGY_KW)
-            if always or is_energy or is_weather or is_nuclear:
-                cat = "⚡ Ops" if source in ("PJM Ops","PJM News") else "🌩 Weather" if is_weather else "☢ Nuclear" if is_nuclear else "📰 News"
-                articles.append({"source":source,"category":cat,"title":title,"snippet":desc[:220].strip()+("…" if len(desc)>220 else ""),"pub":pub[:25],"url":link.strip()})
-    except Exception:
-        pass
-    return articles
-
 async def fetch_news() -> list:
     cached = cache_get("news")
     if cached:
         return cached
+    if not PJM_API_KEY:
+        return []
 
-    FEEDS = [
-        ("EIA",      "https://www.eia.gov/rss/press_releases.xml",                                      False),
-        ("FERC",     "https://www.ferc.gov/news-events/news/rss.xml",                                   False),
-        ("NRC",      "https://www.nrc.gov/reading-rm/doc-collections/event-status/rss/en.xml",          False),
-        ("PJM News", "https://www.pjm.com/rss",                                                         False),
-    ]
-
+    headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
     articles = []
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        tasks = [try_fetch_rss(client, url, src, always) for src, url, always in FEEDS]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for res in results:
-            if isinstance(res, list):
-                articles.extend(res)
 
-    # If still empty, try EIA directly with no keyword filter
-    if not articles:
-        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-            try:
-                r    = await client.get("https://www.eia.gov/rss/press_releases.xml", headers={"User-Agent":"Mozilla/5.0"})
-                root = ET.fromstring(r.text)
-                for item in root.findall(".//item")[:12]:
+    async with httpx.AsyncClient(timeout=20) as client:
+
+        # 1. Generation Outages by Type — major outages affecting capacity
+        try:
+            r = await client.get(f"{PJM_BASE}/gen_outages_by_type",
+                params={"rowCount":"10","startRow":"1","datetime_beginning_ept":"Today","order":"Desc","sort":"datetime_beginning_ept"},
+                headers=headers)
+            if r.status_code == 200:
+                items = r.json().get("items", [])
+                for item in items[:5]:
+                    total = float(item.get("total_outages_mw") or item.get("rto_total") or 0)
+                    forced = float(item.get("forced_outages_mw") or item.get("rto_forced") or 0)
+                    hour = item.get("datetime_beginning_ept","")
+                    if total > 0:
+                        articles.append({
+                            "source": "PJM Outages",
+                            "category": "⚡ Ops",
+                            "title": f"PJM Generation Outages: {total:,.0f} MW total, {forced:,.0f} MW forced",
+                            "snippet": f"Total generation outages: {total:,.0f} MW. Forced outages: {forced:,.0f} MW. Maintenance: {(total-forced):,.0f} MW.",
+                            "pub": hour[:16] if hour else "",
+                            "url": "https://dataminer2.pjm.com/feed/gen_outages_by_type",
+                        })
+                        break
+        except Exception:
+            pass
+
+        # 2. Forecasted Generation Outages
+        try:
+            r = await client.get(f"{PJM_BASE}/frcstd_gen_outages",
+                params={"rowCount":"5","startRow":"1","datetime_beginning_ept":"Today","order":"Asc","sort":"datetime_beginning_ept"},
+                headers=headers)
+            if r.status_code == 200:
+                items = r.json().get("items", [])
+                for item in items[:3]:
+                    rto = float(item.get("forecast_gen_outage_mw_rto") or 0)
+                    date = item.get("forecast_date","")
+                    if rto > 0:
+                        articles.append({
+                            "source": "PJM Forecast",
+                            "category": "⚡ Ops",
+                            "title": f"Forecasted Outage: {rto:,.0f} MW RTO ({date[:10]})",
+                            "snippet": f"PJM forecasts {rto:,.0f} MW of generation outages for {date[:10]}.",
+                            "pub": date[:16] if date else "",
+                            "url": "https://dataminer2.pjm.com/feed/frcstd_gen_outages",
+                        })
+        except Exception:
+            pass
+
+        # 3. Reserve Market / Capacity
+        try:
+            r = await client.get(f"{PJM_BASE}/reserve_market_results",
+                params={"rowCount":"5","startRow":"1","datetime_beginning_ept":"Today","order":"Desc","sort":"datetime_beginning_ept"},
+                headers=headers)
+            if r.status_code == 200:
+                items = r.json().get("items", [])
+                for item in items[:2]:
                     articles.append({
-                        "source":"EIA","category":"📰 News",
-                        "title":(item.findtext("title") or "").strip(),
-                        "snippet":(item.findtext("description") or "")[:220].strip(),
-                        "pub":(item.findtext("pubDate") or "")[:25],
-                        "url":(item.findtext("link") or "").strip(),
+                        "source": "PJM Reserves",
+                        "category": "⚡ Ops",
+                        "title": f"Reserve Market Result: {item.get('reserve_zone','RTO')}",
+                        "snippet": str({k:v for k,v in item.items() if v and k not in ("datetime_beginning_utc",)})[:200],
+                        "pub": (item.get("datetime_beginning_ept",""))[:16],
+                        "url": "https://dataminer2.pjm.com/feed/reserve_market_results",
                     })
-            except Exception:
-                pass
+        except Exception:
+            pass
 
-    articles.sort(key=lambda x:(0 if "Ops" in x.get("category","") else 1 if "Weather" in x.get("category","") else 2 if "Nuclear" in x.get("category","") else 3))
-    cache_set("news", articles[:20])
-    return articles[:20]
+        # 4. LMP Spikes — flag any hub >$100 or <-$10 as a news item
+        try:
+            lmps = cache_get("lmps") or await fetch_lmps()
+            high = [h for h in lmps if h["lmp"] > 80]
+            low  = [h for h in lmps if h["lmp"] < 0]
+            if high:
+                names = ", ".join(h["name"] for h in high)
+                articles.append({
+                    "source": "PJM LMP Alert",
+                    "category": "⚡ Ops",
+                    "title": f"High LMP Alert: {names} above $80/MWh",
+                    "snippet": ", ".join(f"{h['name']}: ${h['lmp']}" for h in high),
+                    "pub": (high[0].get("hour",""))[:16],
+                    "url": "https://dataminer2.pjm.com/feed/rt_unverified_hrl_lmps",
+                })
+            if low:
+                names = ", ".join(h["name"] for h in low)
+                articles.append({
+                    "source": "PJM LMP Alert",
+                    "category": "⚡ Ops",
+                    "title": f"Negative LMP: {names}",
+                    "snippet": ", ".join(f"{h['name']}: ${h['lmp']}" for h in low),
+                    "pub": (low[0].get("hour",""))[:16],
+                    "url": "https://dataminer2.pjm.com/feed/rt_unverified_hrl_lmps",
+                })
+        except Exception:
+            pass
+
+        # 5. DA vs RT spread context
+        try:
+            r = await client.get(f"{PJM_BASE}/da_hrl_lmps",
+                params={"rowCount":"50","startRow":"1","type":"HUB","datetime_beginning_ept":"Today","order":"Desc","sort":"datetime_beginning_ept"},
+                headers=headers)
+            if r.status_code == 200:
+                da_items = r.json().get("items",[])
+                if da_items:
+                    latest = da_items[0].get("datetime_beginning_ept","")
+                    da_map = {}
+                    for row in da_items:
+                        if row.get("datetime_beginning_ept") == latest:
+                            da_map[row.get("pnode_name","").upper()] = float(row.get("total_lmp_da") or 0)
+                    lmps = cache_get("lmps") or []
+                    spreads = []
+                    for h in lmps:
+                        da = da_map.get(h["name"].upper())
+                        if da:
+                            spread = h["lmp"] - da
+                            spreads.append((h["name"], h["lmp"], da, spread))
+                    if spreads:
+                        biggest = sorted(spreads, key=lambda x: abs(x[3]), reverse=True)[:3]
+                        lines = [f"{n}: RT ${rt:.2f} vs DA ${da:.2f} (Δ{'+' if sp>0 else ''}{sp:.2f})" for n,rt,da,sp in biggest]
+                        articles.append({
+                            "source": "PJM DA/RT",
+                            "category": "📰 News",
+                            "title": f"DA/RT Spread: Largest divergence at {biggest[0][0]}",
+                            "snippet": " | ".join(lines),
+                            "pub": latest[:16],
+                            "url": "https://dataminer2.pjm.com/feed/da_hrl_lmps",
+                        })
+        except Exception:
+            pass
+
+    cache_set("news", articles)
+    return articles
+
 
 # ---------------------------------------------------------------------------
 # Polymarket
@@ -281,6 +353,28 @@ async def fetch_polymarket() -> list:
     return results
 
 # ---------------------------------------------------------------------------
+# Network test
+# ---------------------------------------------------------------------------
+@app.get("/api/nettest")
+async def api_nettest():
+    results = {}
+    urls = [
+        ("eia_rss",   "https://www.eia.gov/rss/press_releases.xml"),
+        ("ferc_rss",  "https://www.ferc.gov/news-events/news/rss.xml"),
+        ("nrc_rss",   "https://www.nrc.gov/reading-rm/doc-collections/event-status/rss/en.xml"),
+        ("pjm_rss",   "https://www.pjm.com/rss"),
+        ("polymarket","https://gamma-api.polymarket.com/markets?limit=1"),
+    ]
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+        for name, url in urls:
+            try:
+                r = await client.get(url, headers={"User-Agent":"Mozilla/5.0 Chrome/120"})
+                results[name] = {"status": r.status_code, "len": len(r.text)}
+            except Exception as e:
+                results[name] = {"error": str(e)[:80]}
+    return JSONResponse(results)
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 @app.get("/api/lmps")
@@ -295,7 +389,7 @@ async def api_lmps_debug():
     headers = {"Ocp-Apim-Subscription-Key":PJM_API_KEY,"Accept":"application/json"}
     params  = {"rowCount":"5","startRow":"1","type":"HUB","datetime_beginning_ept":"Today","order":"Desc","sort":"datetime_beginning_ept"}
     async with httpx.AsyncClient(timeout=20) as client:
-        r    = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps",params=params,headers=headers)
+        r = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps",params=params,headers=headers)
         data = r.json() if r.status_code==200 else {}
     return JSONResponse({"status":r.status_code,"total_rows":data.get("totalRows",0),"sample":data.get("items",[])[:3]})
 
@@ -305,11 +399,14 @@ async def api_load_debug():
     headers = {"Ocp-Apim-Subscription-Key":PJM_API_KEY,"Accept":"application/json"}
     debug = {}
     async with httpx.AsyncClient(timeout=20) as client:
-        for kw in ["5MinutesAgo","CurrentHour","LastHour"]:
-            r = await client.get(f"{PJM_BASE}/inst_load",
-                params={"rowCount":"5","startRow":"1","datetime_beginning_ept":kw},headers=headers)
-            data = r.json() if r.status_code==200 else {}
-            debug[kw] = {"status":r.status_code,"total_rows":data.get("totalRows",0),"sample":data.get("items",[])[:2]}
+        r = await client.get(f"{PJM_BASE}/inst_load",
+            params={"rowCount":"10","startRow":"1","datetime_beginning_ept":"5MinutesAgo"},headers=headers)
+        data = r.json() if r.status_code==200 else {}
+        debug["inst_load"] = {"status":r.status_code,"total_rows":data.get("totalRows",0),"sample":data.get("items",[])[:5]}
+        r = await client.get(f"{PJM_BASE}/load_frcstd_7day",
+            params={"rowCount":"5","startRow":"1","datetime_beginning_ept":"Today"},headers=headers)
+        data = r.json() if r.status_code==200 else {}
+        debug["load_frcstd"] = {"status":r.status_code,"total_rows":data.get("totalRows",0),"sample":data.get("items",[])[:2]}
     return JSONResponse(debug)
 
 @app.get("/api/intraday")
