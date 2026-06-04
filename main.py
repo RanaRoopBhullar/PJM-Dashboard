@@ -61,9 +61,18 @@ async def fetch_lmps() -> list:
         seen.add(name)
         lmp  = float(row.get("total_lmp_rt") or 0)
         cong = float(row.get("congestion_price_rt") or 0)
-        se   = row.get("system_energy_price_rt")
-        energy = float(se) if se is not None else round(lmp - cong, 2)
-        loss   = round(lmp - energy - cong, 2) if se is not None else 0.0
+        # Check all possible energy/loss field names
+        se    = row.get("system_energy_price_rt")
+        ml    = row.get("marginal_loss_lmp_rt") or row.get("marginal_loss_price_rt")
+        if se is not None and float(se) != 0:
+            energy = float(se)
+            loss   = round(lmp - energy - cong, 2)
+        elif ml is not None:
+            loss   = float(ml)
+            energy = round(lmp - cong - loss, 2)
+        else:
+            energy = round(lmp - cong, 2)
+            loss   = 0.0
         results.append({"name":row.get("pnode_name"),"type":"Hub",
                          "lmp":round(lmp,2),"energy":round(energy,2),
                          "congestion":round(cong,2),"loss":loss,"hour":latest})
@@ -352,10 +361,16 @@ async def fetch_news() -> list:
 # ─────────────────────────────────────────────────────────────
 # Polymarket
 # ─────────────────────────────────────────────────────────────
-POWER_KW = ["electricity","power","energy","grid","PJM","ERCOT","natural gas","coal",
-            "solar","wind","megawatt","nuclear","utility","transmission","oil","gas","LNG",
-            "crude","barrel","OPEC","refinery","pipeline","carbon","emissions","climate",
-            "renewable","battery","storage","EV","electric vehicle","heat","temperature"]
+POWER_KW = ["electricity","power","energy","PJM","ERCOT","natural gas","coal",
+            "solar","wind","megawatt","nuclear","utility","oil price","crude oil",
+            "LNG","pipeline","carbon","emissions","energy price","gas price",
+            "barrel","OPEC","refinery","electric grid","power grid","energy crisis"]
+
+# If a market is weather-related, only show if it mentions North American locations
+WEATHER_KW = ["temperature","heat","cold","storm","hurricane","tornado","rainfall","snow","freeze"]
+NA_LOCATIONS = ["us","usa","united states","america","canada","mexico","texas","california",
+                "florida","new york","chicago","houston","north america","midwest","east coast",
+                "west coast","gulf coast","pjm","miso","ercot","spp","wecc"]
 
 async def fetch_polymarket() -> list:
     cached = cache_get("polymarket", 300)
@@ -368,17 +383,22 @@ async def fetch_polymarket() -> list:
     results = []
     for m in markets:
         q = (m.get("question") or m.get("title") or "").lower()
-        if any(k.lower() in q for k in POWER_KW):
-            outcomes = []
-            try:
-                prices = json.loads(m.get("outcomePrices") or "[]")
-                names  = json.loads(m.get("outcomes") or "[]")
-                for name, price in zip(names, prices):
-                    outcomes.append({"label":name,"pct":round(float(price)*100,1)})
-            except Exception: pass
-            results.append({"question":m.get("question") or m.get("title"),
-                             "volume":m.get("volume","—"),"end_date":(m.get("endDate") or "")[:10],
-                             "url":f"https://polymarket.com/event/{m.get('slug','')}","outcomes":outcomes})
+        is_energy  = any(k.lower() in q for k in POWER_KW)
+        is_weather = any(k.lower() in q for k in WEATHER_KW)
+        is_na      = any(loc in q for loc in NA_LOCATIONS)
+        # Include if: energy topic OR (weather + North America)
+        if not (is_energy or (is_weather and is_na)):
+            continue
+        outcomes = []
+        try:
+            prices = json.loads(m.get("outcomePrices") or "[]")
+            names  = json.loads(m.get("outcomes") or "[]")
+            for name, price in zip(names, prices):
+                outcomes.append({"label":name,"pct":round(float(price)*100,1)})
+        except Exception: pass
+        results.append({"question":m.get("question") or m.get("title"),
+                         "volume":m.get("volume","—"),"end_date":(m.get("endDate") or "")[:10],
+                         "url":f"https://polymarket.com/event/{m.get('slug','')}","outcomes":outcomes})
         if len(results) >= 8: break
     cache_set("polymarket", results)
     return results
