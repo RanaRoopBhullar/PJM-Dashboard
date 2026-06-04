@@ -176,7 +176,8 @@ a:hover{text-decoration:underline;}
 </div>
 <script>
 const BASE = window.location.origin;
-let chart = null, daMap = {};
+let chart = null;
+let daMap = {};  // global, populated before renderTable is called
 
 const fmt  = v => Number(v).toFixed(2);
 const fmtK = v => v > 0 ? (v/1000).toFixed(1)+'k' : '—';
