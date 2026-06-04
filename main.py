@@ -177,25 +177,45 @@ async def fetch_load() -> dict:
 # Gas Prices — EIA verified: frequency must be "monthly" or "annual"
 # ─────────────────────────────────────────────────────────────
 async def fetch_gas() -> list:
-    cached = cache_get("gas", 3600)  # 1hr cache
+    cached = cache_get("gas", 3600)
     if cached: return cached
     prices = []
     try:
         async with httpx.AsyncClient(timeout=15) as c:
+            # EIA v2 API — Henry Hub monthly natural gas spot price
             r = await c.get("https://api.eia.gov/v2/natural-gas/pri/sum/data/",
                 params={"api_key":"DEMO_KEY","frequency":"monthly","data[0]":"value",
                         "facets[series][]":"RNGWHHD","sort[0][column]":"period",
-                        "sort[0][direction]":"desc","length":"2"})
+                        "sort[0][direction]":"desc","length":"2",
+                        "offset":"0"})
             if r.status_code == 200:
                 rows = r.json().get("response",{}).get("data",[])
                 for row in rows[:1]:
-                    prices.append({"hub":"Henry Hub","date":row.get("period",""),
-                                   "price":round(float(row.get("value") or 0),3),
-                                   "unit":"$/MMBtu (monthly avg)"})
+                    price = float(row.get("value") or 0)
+                    if price > 0:
+                        prices.append({"hub":"Henry Hub","date":row.get("period",""),
+                                       "price":round(price,3),"unit":"$/MMBtu (monthly)"})
     except Exception:
         pass
+
+    # Fallback — try alternate EIA series endpoint
     if not prices:
-        prices = [{"hub":"Henry Hub","date":"—","price":0,"unit":"$/MMBtu"}]
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get("https://api.eia.gov/series/",
+                    params={"api_key":"DEMO_KEY","series_id":"NG.RNGWHHD.D","num":"1"})
+                if r.status_code == 200:
+                    data = r.json()
+                    series = data.get("series",[])
+                    if series and series[0].get("data"):
+                        pt = series[0]["data"][0]
+                        prices.append({"hub":"Henry Hub","date":pt[0],
+                                       "price":round(float(pt[1]),3),"unit":"$/MMBtu"})
+        except Exception:
+            pass
+
+    if not prices:
+        prices = [{"hub":"Henry Hub","date":"—","price":0,"unit":"$/MMBtu — check EIA.gov"}]
     cache_set("gas", prices)
     return prices
 
@@ -333,7 +353,9 @@ async def fetch_news() -> list:
 # Polymarket
 # ─────────────────────────────────────────────────────────────
 POWER_KW = ["electricity","power","energy","grid","PJM","ERCOT","natural gas","coal",
-            "solar","wind","megawatt","nuclear","utility","transmission","oil","gas","LNG","crude"]
+            "solar","wind","megawatt","nuclear","utility","transmission","oil","gas","LNG",
+            "crude","barrel","OPEC","refinery","pipeline","carbon","emissions","climate",
+            "renewable","battery","storage","EV","electric vehicle","heat","temperature"]
 
 async def fetch_polymarket() -> list:
     cached = cache_get("polymarket", 300)
