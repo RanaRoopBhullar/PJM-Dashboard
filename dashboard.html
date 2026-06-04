@@ -345,10 +345,14 @@ async function loadAll(){
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const d=await res.json();
 
-    // DA LMPs now included in /api/all response
+    // DA LMPs — build map first, then render table
+    daMap={};
     if(d.da&&d.da.length){
-      daMap={};
-      d.da.forEach(row=>{ if(row.name&&row.lmp) daMap[row.name.toUpperCase()]={lmp:row.lmp}; });
+      d.da.forEach(row=>{
+        if(row.name&&row.lmp){
+          daMap[row.name.toUpperCase().trim()]={lmp:row.lmp,energy:row.energy||0,cong:row.cong||0};
+        }
+      });
     }
 
     if(d.lmps&&d.lmps.length){renderMetrics(d.lmps);renderTable(d.lmps);}
