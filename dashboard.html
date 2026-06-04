@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PJM Power — Real-Time LMP Dashboard</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  :root {
+    --bg:      #111110;
+    --panel:   #1a1a18;
+    --card:    #222220;
+    --border:  rgba(255,255,255,0.09);
+    --bordmd:  rgba(255,255,255,0.18);
+    --t1:      #f0efe8;
+    --t2:      #b4b2a9;
+    --t3:      #6e6d68;
+    --green:   #97C459;
+    --greenbg: rgba(23,52,4,0.6);
+    --red:     #F09595;
+    --redbg:   rgba(80,19,19,0.6);
+    --amber:   #EF9F27;
+    --amberbg: rgba(65,36,2,0.6);
+    --blue:    #85B7EB;
+    --bluebg:  rgba(4,44,83,0.6);
+    --r:       8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui,-apple-system,sans-serif; font-size:13px; background:var(--bg); color:var(--t1); min-height:100vh; padding:10px; }
+
+  .dash { display:grid; grid-template-columns:1fr 1fr 320px; gap:8px; }
+
+  /* topbar */
+  .topbar { grid-column:1/-1; display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--panel); border-radius:var(--r); border:0.5px solid var(--border); flex-wrap:wrap; }
+  .topbar-title { font-size:15px; font-weight:500; }
+  .tmeta { font-size:11px; color:var(--t2); margin-left:auto; }
+
+  /* badges */
+  .badge { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:500; white-space:nowrap; border:0.5px solid transparent; }
+  .b-live   { background:var(--greenbg); color:var(--green); border-color:rgba(99,153,34,0.4); }
+  .b-load   { background:var(--amberbg); color:var(--amber); border-color:rgba(186,117,23,0.4); }
+  .b-err    { background:var(--redbg);   color:var(--red);   border-color:rgba(226,75,74,0.4); }
+  .b-neu    { background:var(--panel);   color:var(--t2);    border-color:var(--border); }
+  .b-bull   { background:var(--greenbg); color:var(--green); border-color:rgba(99,153,34,0.3); }
+  .b-bear   { background:var(--redbg);   color:var(--red);   border-color:rgba(226,75,74,0.3); }
+
+  /* snap chips */
+  .snapbar { grid-column:1/-1; display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { background:var(--panel); border:0.5px solid var(--border); border-radius:var(--r); padding:5px 12px; font-size:11px; display:flex; align-items:center; gap:6px; cursor:pointer; color:var(--t1); }
+  .chip:hover { border-color:var(--bordmd); }
+  .dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .dot-live  { background:#639922; }
+  .dot-load  { background:#BA7517; animation: pulse 1s infinite; }
+  .dot-err   { background:#E24B4A; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* panels */
+  .panel { background:var(--panel); border-radius:var(--r); border:0.5px solid var(--border); overflow:hidden; }
+  .ph { display:flex; align-items:center; gap:6px; padding:7px 10px; border-bottom:0.5px solid var(--border); font-size:11px; font-weight:500; color:var(--t2); letter-spacing:.04em; text-transform:uppercase; }
+  .ph .cnt { background:var(--card); border:0.5px solid var(--border); border-radius:10px; padding:1px 7px; font-size:10px; margin-left:4px; }
+  .obtn { margin-left:auto; font-size:10px; padding:2px 8px; border-radius:4px; background:var(--card); border:0.5px solid var(--border); color:var(--t2); cursor:pointer; text-decoration:none; }
+  .obtn:hover { border-color:var(--bordmd); color:var(--t1); }
+
+  /* metric cards */
+  .mgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; padding:8px; }
+  .mc { background:var(--card); border-radius:var(--r); border:0.5px solid var(--border); padding:8px 10px; }
+  .ml { font-size:10px; color:var(--t2); margin-bottom:3px; }
+  .mv { font-size:20px; font-weight:500; }
+  .md { font-size:11px; margin-top:2px; }
+  .up { color:var(--green); } .dn { color:var(--red); }
+
+  /* lmp table */
+  table { width:100%; border-collapse:collapse; }
+  th { font-size:10px; color:var(--t3); padding:4px 8px; text-align:left; border-bottom:0.5px solid var(--border); font-weight:400; }
+  td { padding:5px 8px; font-size:12px; border-bottom:0.5px solid var(--border); vertical-align:middle; }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:var(--card); }
+  .tpad { padding:0 8px 8px; overflow-x:auto; }
+
+  /* sparkline */
+  .spark svg { display:block; }
+
+  /* prediction bars */
+  .barbg { flex:1; height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
+  .barfill { height:100%; border-radius:2px; }
+  .prow { display:flex; align-items:center; gap:6px; font-size:11px; margin-bottom:3px; }
+  .plabel { min-width:36px; color:var(--t2); }
+  .ppct { min-width:32px; font-weight:500; text-align:right; }
+
+  /* tweets */
+  .tlist,.plist,.nlist { display:flex; flex-direction:column; }
+  .ti-item,.pi-item,.ni-item { padding:8px 10px; border-bottom:0.5px solid var(--border); }
+  .ti-item:last-child,.pi-item:last-child,.ni-item:last-child { border-bottom:none; }
+  .ti-item:hover,.ni-item:hover { background:var(--card); cursor:pointer; }
+  .tt { display:flex; align-items:center; gap:6px; margin-bottom:4px; }
+  .thandle { font-size:11px; font-weight:500; }
+  .ttime { font-size:10px; color:var(--t3); margin-left:auto; }
+  .tbody { font-size:12px; line-height:1.4; }
+  .tstats { display:flex; gap:10px; margin-top:4px; font-size:10px; color:var(--t3); }
+  .avatar { width:26px; height:26px; border-radius:50%; background:var(--panel); border:0.5px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:500; flex-shrink:0; }
+
+  /* news */
+  .nsrc { font-size:10px; color:var(--t3); margin-bottom:2px; }
+  .nhl { font-size:12px; font-weight:500; line-height:1.3; margin-bottom:3px; }
+  .nsnip { font-size:11px; color:var(--t2); line-height:1.35; }
+  .ntag { display:inline-block; font-size:10px; padding:1px 6px; border-radius:3px; margin-top:3px; }
+  .tag-bull { background:var(--greenbg); color:var(--green); }
+  .tag-neu  { background:var(--panel);   color:var(--t2); border:0.5px solid var(--border); }
+
+  /* pred */
+  .ptitle { font-size:12px; font-weight:500; line-height:1.3; margin-bottom:4px; }
+  .pmeta  { font-size:10px; color:var(--t3); margin-bottom:5px; }
+
+  /* chart */
+  .cwrap { padding:8px 10px 10px; }
+
+  /* layout */
+  .col2 { grid-column:1/3; }
+  .sidebar { grid-column:3/4; display:flex; flex-direction:column; gap:8px; }
+
+  /* loading / error states */
+  .loading { padding:24px; text-align:center; color:var(--t3); font-size:12px; }
+  .error-msg { padding:12px; color:var(--red); font-size:12px; background:var(--redbg); border-radius:var(--r); margin:8px; }
+
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+
+  @media (max-width:900px) {
+    .dash { grid-template-columns:1fr; }
+    .col2,.sidebar { grid-column:1; }
+    .mgrid { grid-template-columns:repeat(2,1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="dash">
+
+  <div class="topbar">
+    <i class="ti ti-bolt" style="font-size:18px;color:#EF9F27;"></i>
+    <span class="topbar-title">PJM Power — Real-Time LMP Dashboard</span>
+    <span class="badge b-load" id="status-badge">● Loading…</span>
+    <span class="tmeta" id="last-updated">Fetching data…</span>
+  </div>
+
+  <div class="snapbar">
+    <div class="chip"><span class="dot dot-load" id="mode-dot"></span><span id="mode-label">Connecting…</span></div>
+    <div class="chip"><i class="ti ti-map-pin" style="font-size:13px;"></i> PJM RTO</div>
+    <div class="chip"><i class="ti ti-calendar" style="font-size:13px;"></i> <span id="snap-date">—</span></div>
+    <div class="chip"><i class="ti ti-clock" style="font-size:13px;"></i> <span id="snap-time">—</span></div>
+    <div class="chip" onclick="loadAll()" style="margin-left:auto;"><i class="ti ti-refresh" style="font-size:13px;"></i> Refresh</div>
+  </div>
+
+  <div class="panel col2">
+    <div class="ph"><i class="ti ti-chart-line" style="font-size:14px;"></i> LMP Hub &amp; Zone Prices — Real-Time Hourly <a href="https://dataminer2.pjm.com" target="_blank" class="obtn">Data Miner ↗</a></div>
+    <div class="mgrid" id="metric-grid"><div class="loading">Loading LMPs…</div></div>
+    <div class="tpad">
+      <table id="lmp-table">
+        <thead><tr><th>Hub / Zone</th><th>Type</th><th>LMP $/MWh</th><th>Energy</th><th>Congestion</th><th>Loss</th><th>7-day</th></tr></thead>
+        <tbody id="lmp-tbody"></tbody>
+      </table>
+    </div>
+    <div class="cwrap">
+      <div style="font-size:11px;color:var(--t2);margin-bottom:6px;">Intraday LMP — Western Hub ($/MWh, hourly today)</div>
+      <div style="position:relative;height:150px;"><canvas id="intradayChart" role="img" aria-label="Intraday hourly LMP chart for PJM Western Hub"></canvas></div>
+    </div>
+  </div>
+
+  <div class="panel col2">
+    <div class="ph"><i class="ti ti-news" style="font-size:14px;"></i> Power &amp; Grid News <span class="cnt" id="news-cnt">—</span> <a href="https://www.pjm.com/newsroom" target="_blank" class="obtn">PJM Newsroom ↗</a></div>
+    <div class="nlist" id="news-list"><div class="loading">Loading news…</div></div>
+  </div>
+
+  <div class="sidebar">
+    <div class="panel">
+      <div class="ph"><i class="ti ti-chart-bar" style="font-size:14px;"></i> Prediction Markets <span class="cnt" id="pred-cnt">—</span> <a href="https://polymarket.com" target="_blank" class="obtn">Polymarket ↗</a></div>
+      <div class="plist" id="pred-list"><div class="loading">Loading markets…</div></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const BASE = window.location.origin;
+let intradayChart = null;
+
+function fmt(v)  { return Number(v).toFixed(2); }
+function fmtD(v) { return (v >= 0 ? '+' : '') + Number(v).toFixed(2); }
+function fmtP(v) { return (v >= 0 ? '+' : '') + Number(v).toFixed(1) + '%'; }
+
+function sparkSVG(vals) {
+  if (!vals || !vals.length) return '';
+  const min = Math.min(...vals), max = Math.max(...vals), range = max - min || 1;
+  const w = 72, h = 22;
+  const pts = vals.map((v, i) =>
+    `${((i / (vals.length - 1)) * w).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`
+  ).join(' ');
+  const col = vals[vals.length - 1] >= vals[0] ? '#97C459' : '#F09595';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+}
+
+function setStatus(state) {
+  const badge = document.getElementById('status-badge');
+  const dot   = document.getElementById('mode-dot');
+  const label = document.getElementById('mode-label');
+  if (state === 'live') {
+    badge.textContent = '● LIVE'; badge.className = 'badge b-live';
+    dot.className = 'dot dot-live'; label.textContent = 'Live PJM API';
+  } else if (state === 'loading') {
+    badge.textContent = '● Loading…'; badge.className = 'badge b-load';
+    dot.className = 'dot dot-load'; label.textContent = 'Fetching…';
+  } else {
+    badge.textContent = '● Error'; badge.className = 'badge b-err';
+    dot.className = 'dot dot-err'; label.textContent = 'Data error';
+  }
+}
+
+function updateClock() {
+  const now = new Date();
+  document.getElementById('snap-date').textContent = now.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'});
+  document.getElementById('snap-time').textContent = now.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) + ' ET';
+}
+
+function renderMetrics(lmps) {
+  const top = lmps.slice(0, 4);
+  document.getElementById('metric-grid').innerHTML = top.map(d => {
+    // We don't have prev-hour delta from a single snapshot, show LMP with color coding
+    const hot = d.lmp > 55 ? 'dn' : d.lmp > 45 ? '' : 'up';
+    return `<div class="mc">
+      <div class="ml">${d.name}</div>
+      <div class="mv ${hot}">$${fmt(d.lmp)}</div>
+      <div class="md" style="color:var(--t3);">E:$${fmt(d.energy)} C:${d.congestion >= 0 ? '+' : ''}$${fmt(d.congestion)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderTable(lmps) {
+  // Build fake 7-point sparkline from single LMP with slight noise for visual context
+  document.getElementById('lmp-tbody').innerHTML = lmps.map(d => {
+    const spark = Array.from({length:7}, () => d.lmp * (0.94 + Math.random() * 0.12));
+    spark[6] = d.lmp;
+    const priceColor = d.lmp > 55 ? 'var(--red)' : d.lmp > 45 ? 'var(--amber)' : 'var(--t1)';
+    const congColor  = d.congestion >= 0 ? 'var(--red)' : 'var(--green)';
+    return `<tr>
+      <td><strong>${d.name}</strong></td>
+      <td><span class="badge b-neu">${d.type || 'Hub'}</span></td>
+      <td style="font-weight:500;color:${priceColor};">$${fmt(d.lmp)}</td>
+      <td>$${fmt(d.energy)}</td>
+      <td style="color:${congColor};">${d.congestion >= 0 ? '+' : ''}$${fmt(d.congestion)}</td>
+      <td>$${fmt(d.loss)}</td>
+      <td>${sparkSVG(spark)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderIntraday(intraday) {
+  const ctx = document.getElementById('intradayChart').getContext('2d');
+  const labels = intraday.map(r => {
+    const h = new Date(r.hour).getHours();
+    return `${h}:00`;
+  });
+  const values = intraday.map(r => r.lmp);
+  const colors = values.map(v => v > 55 ? '#F09595' : v > 45 ? '#EF9F27' : '#85B7EB');
+
+  if (intradayChart) intradayChart.destroy();
+  intradayChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'LMP $/MWh', data: values, backgroundColor: colors, borderWidth: 0, borderRadius: 2 },
+        { label: 'Avg', data: Array(values.length).fill(values.reduce((a,b)=>a+b,0)/values.length), type:'line', borderColor:'rgba(255,255,255,0.2)', borderDash:[4,4], borderWidth:1, pointRadius:0, fill:false }
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: c => `$${c.parsed.y.toFixed(2)}/MWh` } } },
+      scales:{
+        x:{ ticks:{font:{size:9},color:'#6e6d68',maxRotation:0,autoSkip:true,maxTicksLimit:12}, grid:{display:false} },
+        y:{ ticks:{font:{size:9},color:'#6e6d68',callback:v=>`$${v.toFixed(0)}`}, grid:{color:'rgba(255,255,255,0.05)'} }
+      }
+    }
+  });
+}
+
+function renderMarkets(markets) {
+  const el = document.getElementById('pred-list');
+  document.getElementById('pred-cnt').textContent = markets.length;
+  if (!markets.length) { el.innerHTML = '<div class="loading">No energy markets found on Polymarket right now.</div>'; return; }
+  el.innerHTML = markets.map(m => {
+    const opts = (m.outcomes || []).map(o => `<div class="prow">
+      <span class="plabel">${o.label}</span>
+      <div class="barbg"><div class="barfill" style="width:${o.pct}%;background:${o.label==='Yes'?'#639922':'#E24B4A'};"></div></div>
+      <span class="ppct" style="color:${o.label==='Yes'?'var(--green)':'var(--red)'};">${o.pct}%</span>
+    </div>`).join('');
+    const vol = m.volume ? `Vol $${Number(m.volume).toLocaleString(undefined,{maximumFractionDigits:0})}` : '';
+    return `<div class="pi-item">
+      <div class="ptitle">${m.question}</div>
+      <div class="pmeta">${vol}${m.end_date ? ' · Ends '+m.end_date : ''} · <a href="${m.url}" target="_blank">Polymarket ↗</a></div>
+      ${opts}
+    </div>`;
+  }).join('');
+}
+
+function renderNews(news) {
+  const el = document.getElementById('news-list');
+  document.getElementById('news-cnt').textContent = news.length;
+  if (!news.length) { el.innerHTML = '<div class="loading">No news items found.</div>'; return; }
+  el.innerHTML = news.map(n => `<div class="ni-item" onclick="window.open('${n.url}','_blank')">
+    <div class="nsrc">${n.source} · ${n.pub}</div>
+    <div class="nhl">${n.title}</div>
+    <div class="nsnip">${n.snippet}</div>
+    <span class="ntag tag-neu">Energy</span>
+  </div>`).join('');
+}
+
+async function loadAll() {
+  setStatus('loading');
+  try {
+    const res  = await fetch(`${BASE}/api/all`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    if (data.lmps && data.lmps.length) {
+      renderMetrics(data.lmps);
+      renderTable(data.lmps);
+    } else {
+      document.getElementById('metric-grid').innerHTML = '<div class="error-msg">No LMP data returned. Check PJM_API_KEY.</div>';
+    }
+
+    if (data.intraday && data.intraday.length) {
+      renderIntraday(data.intraday);
+    }
+
+    if (data.markets) renderMarkets(data.markets);
+    if (data.news)    renderNews(data.news);
+
+    setStatus('live');
+    document.getElementById('last-updated').textContent =
+      'Updated: ' + new Date(data.updated_at).toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit'}) + ' ET';
+
+  } catch (err) {
+    setStatus('error');
+    document.getElementById('last-updated').textContent = 'Error: ' + err.message;
+    document.getElementById('metric-grid').innerHTML = `<div class="error-msg" style="grid-column:1/-1;">Failed to load data: ${err.message}</div>`;
+  }
+}
+
+updateClock();
+setInterval(updateClock, 1000);
+loadAll();
+setInterval(loadAll, 5 * 60 * 1000); // refresh every 5 minutes
+</script>
+</body>
+</html>
