@@ -318,8 +318,32 @@ async def fetch_news() -> list:
         except Exception:
             pass
 
-    cache_set("news", articles)
-    return articles
+    # PJM RSS + FERC RSS -- confirmed accessible from Railway
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as rss_client:
+            for src, url in [("PJM", "https://www.pjm.com/rss"), ("FERC", "https://www.ferc.gov/news-events/news/rss.xml")]:
+                try:
+                    r = await rss_client.get(url, headers={"User-Agent":"Mozilla/5.0 Chrome/120"})
+                    if r.status_code != 200:
+                        continue
+                    root  = ET.fromstring(r.text)
+                    items = root.findall(".//item")
+                    ENERGY_KW = ["power","energy","electricity","grid","lmp","capacity","natural gas","coal","solar","wind","pjm","ferc","megawatt","mw","transmission","congestion","renewable","nuclear","generation","utility","outage","demand","load","curtailment","emergency","alert","market","rate","tariff"]
+                    for item in items[:20]:
+                        title = (item.findtext("title") or "").strip()
+                        desc  = (item.findtext("description") or "").strip()
+                        pub   = (item.findtext("pubDate") or "").strip()
+                        link  = (item.findtext("link") or "").strip()
+                        if any(k in (title+" "+desc).lower() for k in ENERGY_KW):
+                            articles.append({"source":src,"category":"⚡ Ops" if src=="PJM" else "📰 News","title":title,"snippet":desc[:220].strip()+("…" if len(desc)>220 else ""),"pub":pub[:25],"url":link})
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    articles.sort(key=lambda x: (0 if "Ops" in x.get("category","") else 1))
+    cache_set("news", articles[:20])
+    return articles[:20]
 
 
 # ---------------------------------------------------------------------------
