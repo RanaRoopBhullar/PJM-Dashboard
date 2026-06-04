@@ -1,6 +1,5 @@
 """
 PJM Power Dashboard — Backend Server
-Uses PJM keyword date filters: CurrentHour, LastHour, Today
 """
 
 import os
@@ -17,13 +16,7 @@ import json
 load_dotenv()
 
 app = FastAPI(title="PJM Dashboard API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 PJM_API_KEY = os.getenv("PJM_API_KEY", "")
 PJM_BASE    = "https://api.pjm.com/api/v1"
@@ -40,10 +33,30 @@ def cache_get(key):
 def cache_set(key, data):
     _cache[key] = {"ts": datetime.now(timezone.utc).timestamp(), "data": data}
 
+# Exact pnode_name values as they appear in PJM data
 PJM_HUBS = [
     "WESTERN HUB", "EASTERN HUB", "AEP-DAYTON HUB",
     "N ILLINOIS HUB", "NI HUB", "PECO", "PPL", "BGE", "DOMINION"
 ]
+
+async def fetch_all_lmp_rows(client, feed, dt_keyword, row_count=500, start_row=1):
+    """Fetch a page of LMP rows from PJM."""
+    headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
+    params  = {
+        "rowCount":               str(row_count),
+        "startRow":               str(start_row),
+        "datetime_beginning_ept": dt_keyword,
+        "order":                  "Asc",
+        "sort":                   "pnode_name",
+    }
+    r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
+    if r.status_code != 200:
+        return [], 0
+    data       = r.json()
+    items      = data.get("items", [])
+    total_rows = int(data.get("totalRows", 0))
+    return items, total_rows
+
 
 async def fetch_lmps() -> list:
     cached = cache_get("lmps")
@@ -53,59 +66,55 @@ async def fetch_lmps() -> list:
     if not PJM_API_KEY:
         raise HTTPException(status_code=503, detail="PJM_API_KEY not configured")
 
-    headers = {
-        "Ocp-Apim-Subscription-Key": PJM_API_KEY,
-        "Accept": "application/json",
-    }
+    hubs_upper = {h.upper(): h for h in PJM_HUBS}
+    results    = {}
 
-    rows = []
-    # Use PJM keyword filters — CurrentHour then LastHour
-    async with httpx.AsyncClient(timeout=20) as client:
-        for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
-            for dt_keyword in ["CurrentHour", "LastHour"]:
-                params = {
-                    "rowCount": "500",
-                    "startRow": "1",
-                    "datetime_beginning_ept": dt_keyword,
-                }
-                r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
-                if r.status_code == 200:
-                    items = r.json().get("items", [])
-                    if items:
-                        rows = items
-                        break
-            if rows:
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Page through results until we find all hubs or exhaust data
+        start_row  = 1
+        page_size  = 500
+        total_rows = None
+
+        while len(results) < len(PJM_HUBS):
+            if total_rows is not None and start_row > total_rows:
                 break
 
-    if not rows:
-        return []
+            items, total_rows = await fetch_all_lmp_rows(
+                client, "rt_unverified_hrl_lmps", "LastHour", page_size, start_row
+            )
+            if not items:
+                break
 
-    results = []
-    seen = set()
-    for row in rows:
-        name = (row.get("pnode_name") or "").upper().strip()
-        if name in PJM_HUBS and name not in seen:
-            seen.add(name)
-            lmp    = float(row.get("total_lmp_rt") or row.get("total_lmp") or 0)
-            energy = float(row.get("energy_lmp_rt") or row.get("system_energy_price_rt") or row.get("energy_lmp") or 0)
-            cong   = float(row.get("congestion_price_rt") or row.get("congestion_price") or 0)
-            loss   = float(row.get("marginal_loss_lmp_rt") or row.get("marginal_loss_lmp") or 0)
-            results.append({
-                "name":       row.get("pnode_name"),
-                "type":       row.get("type", "Hub"),
-                "lmp":        round(lmp, 2),
-                "energy":     round(energy, 2),
-                "congestion": round(cong, 2),
-                "loss":       round(loss, 2),
-                "hour":       row.get("datetime_beginning_ept", ""),
-            })
+            for row in items:
+                name = (row.get("pnode_name") or "").upper().strip()
+                if name in hubs_upper and name not in results:
+                    lmp    = float(row.get("total_lmp_rt") or row.get("total_lmp") or 0)
+                    energy = float(row.get("energy_lmp_rt") or row.get("system_energy_price_rt") or 0)
+                    cong   = float(row.get("congestion_price_rt") or row.get("congestion_price") or 0)
+                    loss   = float(row.get("marginal_loss_lmp_rt") or row.get("marginal_loss_lmp") or 0)
+                    results[name] = {
+                        "name":       row.get("pnode_name"),
+                        "type":       row.get("type", "Hub"),
+                        "lmp":        round(lmp, 2),
+                        "energy":     round(energy, 2),
+                        "congestion": round(cong, 2),
+                        "loss":       round(loss, 2),
+                        "hour":       row.get("datetime_beginning_ept", ""),
+                    }
 
-    order = {h: i for i, h in enumerate(PJM_HUBS)}
-    results.sort(key=lambda x: order.get(x["name"].upper().strip(), 99))
+            start_row += page_size
 
-    if results:
-        cache_set("lmps", results)
-    return results
+            # Stop if we found everything
+            if len(results) == len(PJM_HUBS):
+                break
+
+    # Sort by preferred order
+    order     = {h.upper(): i for i, h in enumerate(PJM_HUBS)}
+    final     = sorted(results.values(), key=lambda x: order.get(x["name"].upper().strip(), 99))
+
+    if final:
+        cache_set("lmps", final)
+    return final
 
 
 async def fetch_intraday() -> list:
@@ -117,24 +126,20 @@ async def fetch_intraday() -> list:
         return []
 
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
+    params  = {
+        "rowCount":               "50",
+        "startRow":               "1",
+        "pnode_name":             "WESTERN HUB",
+        "datetime_beginning_ept": "Today",
+    }
 
-    rows = []
     async with httpx.AsyncClient(timeout=20) as client:
-        for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
-            params = {
-                "rowCount":               "24",
-                "startRow":               "1",
-                "pnode_name":             "WESTERN HUB",
-                "datetime_beginning_ept": "Today",
-            }
-            r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
-            if r.status_code == 200:
-                items = r.json().get("items", [])
-                if items:
-                    rows = items
-                    break
+        r = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps", params=params, headers=headers)
+        if r.status_code != 200:
+            return []
+        items = r.json().get("items", [])
 
-    rows_sorted = sorted(rows, key=lambda x: x.get("datetime_beginning_ept", ""))
+    rows_sorted = sorted(items, key=lambda x: x.get("datetime_beginning_ept", ""))
     result = [
         {
             "hour": row.get("datetime_beginning_ept", ""),
@@ -152,25 +157,28 @@ async def fetch_lmps_debug() -> dict:
     if not PJM_API_KEY:
         return {"error": "no key"}
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
-    debug = {}
+    debug   = {}
 
     async with httpx.AsyncClient(timeout=20) as client:
-        for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
-            for kw in ["CurrentHour", "LastHour", "Today"]:
-                params = {"rowCount": "3", "startRow": "1", "datetime_beginning_ept": kw}
-                r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
-                try:
-                    data = r.json()
-                except Exception:
-                    data = {"raw": r.text[:300]}
-                items = data.get("items", []) if isinstance(data, dict) else []
-                debug[f"{feed}|{kw}"] = {
-                    "status":        r.status_code,
-                    "total_rows":    data.get("totalRows", "?") if isinstance(data, dict) else "?",
-                    "item_count":    len(items),
-                    "sample_pnodes": [i.get("pnode_name") for i in items[:3]],
-                    "error":         data.get("Message") or data.get("error") if isinstance(data, dict) and not items else None,
-                }
+        # Check what pnode_names look like for hubs specifically
+        for kw in ["LastHour", "Today"]:
+            params = {
+                "rowCount": "500", "startRow": "1",
+                "datetime_beginning_ept": kw,
+                "type": "HUB",
+            }
+            r = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps", params=params, headers=headers)
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+            items = data.get("items", []) if isinstance(data, dict) else []
+            debug[f"hubs_only|{kw}"] = {
+                "status":      r.status_code,
+                "total_rows":  data.get("totalRows", "?"),
+                "item_count":  len(items),
+                "pnode_names": [i.get("pnode_name") for i in items[:20]],
+            }
     return debug
 
 
@@ -237,8 +245,8 @@ async def fetch_news() -> list:
                 r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 PJMDashboard/1.0"})
                 if r.status_code != 200:
                     continue
-                root = ET.fromstring(r.text)
-                ns   = {"atom": "http://www.w3.org/2005/Atom"}
+                root  = ET.fromstring(r.text)
+                ns    = {"atom": "http://www.w3.org/2005/Atom"}
                 items = root.findall(".//item") or root.findall(".//atom:entry", ns)
                 for item in items[:12]:
                     title   = (item.findtext("title") or item.findtext("atom:title", namespaces=ns) or "").strip()
