@@ -1,6 +1,6 @@
 """
 PJM Power Dashboard — Backend Server
-Uses rt_unverified_hrl_lmps for real-time data (published within minutes)
+Uses PJM keyword date filters: CurrentHour, LastHour, Today
 """
 
 import os
@@ -40,10 +40,6 @@ def cache_get(key):
 def cache_set(key, data):
     _cache[key] = {"ts": datetime.now(timezone.utc).timestamp(), "data": data}
 
-def get_eastern_now():
-    # EDT = UTC-4, EST = UTC-5. Using UTC-4 for summer.
-    return datetime.now(timezone.utc) - timedelta(hours=4)
-
 PJM_HUBS = [
     "WESTERN HUB", "EASTERN HUB", "AEP-DAYTON HUB",
     "N ILLINOIS HUB", "NI HUB", "PECO", "PPL", "BGE", "DOMINION"
@@ -62,32 +58,21 @@ async def fetch_lmps() -> list:
         "Accept": "application/json",
     }
 
-    now_et = get_eastern_now()
     rows = []
-    used_hour = ""
-
+    # Use PJM keyword filters — CurrentHour then LastHour
     async with httpx.AsyncClient(timeout=20) as client:
-        for hours_back in range(0, 6):
-            try_et  = now_et - timedelta(hours=hours_back)
-            # PJM date range filter: use a 1-hour window
-            start   = try_et.strftime("%Y-%m-%d %H:00")
-            end     = (try_et + timedelta(hours=1)).strftime("%Y-%m-%d %H:00")
-
-            # Try unverified feed first (most current), then verified
-            for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
+        for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
+            for dt_keyword in ["CurrentHour", "LastHour"]:
                 params = {
-                    "rowCount":               "500",
-                    "startRow":               "1",
-                    "datetime_beginning_ept": start,
-                    "datetime_ending_ept":    end,
+                    "rowCount": "500",
+                    "startRow": "1",
+                    "datetime_beginning_ept": dt_keyword,
                 }
                 r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
                 if r.status_code == 200:
-                    data  = r.json()
-                    items = data.get("items", [])
+                    items = r.json().get("items", [])
                     if items:
-                        rows      = items
-                        used_hour = start
+                        rows = items
                         break
             if rows:
                 break
@@ -112,7 +97,7 @@ async def fetch_lmps() -> list:
                 "energy":     round(energy, 2),
                 "congestion": round(cong, 2),
                 "loss":       round(loss, 2),
-                "hour":       used_hour,
+                "hour":       row.get("datetime_beginning_ept", ""),
             })
 
     order = {h: i for i, h in enumerate(PJM_HUBS)}
@@ -131,10 +116,6 @@ async def fetch_intraday() -> list:
     if not PJM_API_KEY:
         return []
 
-    now_et   = get_eastern_now()
-    start_dt = now_et.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:00")
-    end_dt   = (now_et + timedelta(hours=1)).strftime("%Y-%m-%d %H:00")
-
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
 
     rows = []
@@ -144,8 +125,7 @@ async def fetch_intraday() -> list:
                 "rowCount":               "24",
                 "startRow":               "1",
                 "pnode_name":             "WESTERN HUB",
-                "datetime_beginning_ept": start_dt,
-                "datetime_ending_ept":    end_dt,
+                "datetime_beginning_ept": "Today",
             }
             r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
             if r.status_code == 200:
@@ -172,28 +152,24 @@ async def fetch_lmps_debug() -> dict:
     if not PJM_API_KEY:
         return {"error": "no key"}
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
-    now_et = get_eastern_now()
-    debug  = {"eastern_now": now_et.strftime("%Y-%m-%d %H:%M"), "attempts": {}}
+    debug = {}
 
     async with httpx.AsyncClient(timeout=20) as client:
-        for hours_back in range(0, 4):
-            try_et = now_et - timedelta(hours=hours_back)
-            start  = try_et.strftime("%Y-%m-%d %H:00")
-            end    = (try_et + timedelta(hours=1)).strftime("%Y-%m-%d %H:00")
-            for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
-                params = {"rowCount": "3", "startRow": "1",
-                          "datetime_beginning_ept": start, "datetime_ending_ept": end}
+        for feed in ["rt_unverified_hrl_lmps", "rt_hrl_lmps"]:
+            for kw in ["CurrentHour", "LastHour", "Today"]:
+                params = {"rowCount": "3", "startRow": "1", "datetime_beginning_ept": kw}
                 r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
                 try:
                     data = r.json()
                 except Exception:
-                    data = {"raw": r.text[:200]}
+                    data = {"raw": r.text[:300]}
                 items = data.get("items", []) if isinstance(data, dict) else []
-                debug["attempts"][f"{feed}|{start}"] = {
-                    "status":       r.status_code,
-                    "total_rows":   data.get("totalRows", "?") if isinstance(data, dict) else "?",
-                    "item_count":   len(items),
+                debug[f"{feed}|{kw}"] = {
+                    "status":        r.status_code,
+                    "total_rows":    data.get("totalRows", "?") if isinstance(data, dict) else "?",
+                    "item_count":    len(items),
                     "sample_pnodes": [i.get("pnode_name") for i in items[:3]],
+                    "error":         data.get("Message") or data.get("error") if isinstance(data, dict) and not items else None,
                 }
     return debug
 
@@ -281,7 +257,6 @@ async def fetch_news() -> list:
             except Exception:
                 continue
 
-    # Fallback: show all EIA items
     if not articles:
         async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
             try:
