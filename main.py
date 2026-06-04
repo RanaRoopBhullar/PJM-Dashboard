@@ -97,10 +97,13 @@ async def fetch_da_lmps() -> dict:
         if row.get("datetime_beginning_ept") != latest: continue
         name = (row.get("pnode_name") or "").upper().strip()
         if name not in da_map:
-            # DA feed uses total_lmp_da
             val = float(row.get("total_lmp_da") or row.get("total_lmp") or 0)
             if val: da_map[name] = {"lmp": val, "hour": latest}
-    if da_map: cache_set("da_lmps", da_map)
+    if da_map:
+        # Cache DA for 1 hour — it doesnt change after day-ahead market closes
+        _cache["da_lmps"] = {"ts": datetime.now(timezone.utc).timestamp(), "data": da_map}
+        # Store TTL override
+        _cache["da_lmps"]["ttl"] = 3600
     return da_map
 
 # ─────────────────────────────────────────────
@@ -130,48 +133,57 @@ async def fetch_load_forecast() -> dict:
     if not PJM_API_KEY: return {}
     result = {"forecast":[], "current_actual":None, "peak_forecast":None}
 
-    async with httpx.AsyncClient(timeout=20) as c:
-        # 7-day forecast — try multiple possible field names
-        try:
-            r = await c.get(f"{PJM_BASE}/load_frcstd_7day",
-                params={"rowCount":"48","startRow":"1","datetime_beginning_ept":"Today",
-                        "order":"Asc","sort":"datetime_beginning_ept"},
-                headers=pjm_headers())
-            if r.status_code == 200:
-                items = r.json().get("items",[])
-                fc = []
-                for row in items:
-                    # Try every known field name for RTO total
-                    mw = float(row.get("rto_total") or row.get("total_load_forecast") or
-                               row.get("load_forecast_rto") or row.get("forecast_load_mw") or
-                               row.get("rto_forecast") or 0)
-                    hr = row.get("datetime_beginning_ept","")
-                    if mw > 0: fc.append({"hour":hr,"mw":mw})
-                result["forecast"] = fc
-                if fc: result["peak_forecast"] = max(r["mw"] for r in fc)
-        except Exception:
-            pass
+    # Known non-overlapping PJM areas that sum to RTO total
+    PJM_AREAS = {"AEP","APS","ATSI","BC","CE","DAY","DEOK","DOM","DUQ","EKPC","JC","ME","PE","PEP","PL","PN","PS","RECO"}
 
-        # Instantaneous load — find PJM RTO total by summing or finding the RTO row
+    async with httpx.AsyncClient(timeout=20) as c:
+        # Load forecast — try multiple feed names
+        for feed in ["load_frcstd_7day", "load_forecast_7day", "hrl_load_metered"]:
+            try:
+                r = await c.get(f"{PJM_BASE}/{feed}",
+                    params={"rowCount":"48","startRow":"1","datetime_beginning_ept":"Today",
+                            "order":"Asc","sort":"datetime_beginning_ept"},
+                    headers=pjm_headers())
+                if r.status_code == 200:
+                    items = r.json().get("items",[])
+                    fc = []
+                    for row in items:
+                        mw = float(row.get("rto_total") or row.get("total_load_forecast") or
+                                   row.get("load_forecast_rto") or row.get("forecast_load_mw") or
+                                   row.get("rto_forecast") or row.get("metered_load_mw") or 0)
+                        hr = row.get("datetime_beginning_ept","")
+                        if mw > 0: fc.append({"hour":hr,"mw":mw})
+                    if fc:
+                        result["forecast"] = fc
+                        result["peak_forecast"] = max(x["mw"] for x in fc)
+                        break
+            except Exception:
+                continue
+
+        # Instantaneous load — sum non-overlapping areas
         try:
             r = await c.get(f"{PJM_BASE}/inst_load",
                 params={"rowCount":"100","startRow":"1","datetime_beginning_ept":"5MinutesAgo"},
                 headers=pjm_headers())
             if r.status_code == 200:
                 items = r.json().get("items",[])
+                # First check for explicit PJM RTO row
                 rto_val = 0.0
                 for item in items:
                     area = (item.get("area") or "").upper().strip()
                     val  = float(item.get("instantaneous_load") or 0)
-                    # "PJM RTO" is the aggregate row
                     if area == "PJM RTO":
-                        rto_val = val
-                        break
-                # If no explicit RTO row, sum all non-overlapping areas
+                        rto_val = val; break
+                # Otherwise sum non-overlapping member areas
                 if not rto_val:
-                    # Use the largest single value — likely to be a regional aggregate
-                    vals = [float(i.get("instantaneous_load") or 0) for i in items]
-                    if vals: rto_val = max(vals)
+                    seen_areas = set()
+                    total = 0.0
+                    for item in items:
+                        area = (item.get("area") or "").upper().strip()
+                        val  = float(item.get("instantaneous_load") or 0)
+                        if area in PJM_AREAS and area not in seen_areas:
+                            total += val; seen_areas.add(area)
+                    if total > 10000: rto_val = total
                 if rto_val > 1000:
                     result["current_actual"] = rto_val
         except Exception:
@@ -534,20 +546,75 @@ async def api_news():
 
 @app.get("/api/all")
 async def api_all():
-    lmps, intraday, load, gas, markets, news = await asyncio.gather(
+    lmps, intraday, load, gas, da, markets, news = await asyncio.gather(
         fetch_lmps(), fetch_intraday(), fetch_load_forecast(),
-        fetch_gas_prices(), fetch_polymarket(), fetch_news(),
+        fetch_gas_prices(), fetch_da_lmps(), fetch_polymarket(), fetch_news(),
         return_exceptions=True,
     )
+    # Convert da_map to list for frontend
+    da_list = []
+    if isinstance(da, dict):
+        da_list = [{"name": k, "lmp": v["lmp"]} for k, v in da.items()]
     return JSONResponse({
         "lmps":    lmps     if not isinstance(lmps,    Exception) else [],
         "intraday":intraday if not isinstance(intraday, Exception) else [],
         "load":    load     if not isinstance(load,     Exception) else {},
         "gas":     gas      if not isinstance(gas,      Exception) else [],
+        "da":      da_list,
         "markets": markets  if not isinstance(markets,  Exception) else [],
         "news":    news     if not isinstance(news,     Exception) else [],
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
+
+
+@app.get("/api/debug/all")
+async def debug_all():
+    """Master debug — checks all feeds and returns exact field names and sample values."""
+    if not PJM_API_KEY: return JSONResponse({"error":"no key"})
+    h = pjm_headers()
+    out = {}
+
+    async with httpx.AsyncClient(timeout=20) as c:
+
+        # DA LMPs
+        r = await c.get(f"{PJM_BASE}/da_hrl_lmps",
+            params={"rowCount":"3","startRow":"1","type":"HUB","datetime_beginning_ept":"Today","order":"Desc","sort":"datetime_beginning_ept"},
+            headers=h)
+        data = r.json() if r.status_code==200 else {}
+        items = data.get("items",[])
+        out["da_hrl_lmps"] = {"status":r.status_code,"total_rows":data.get("totalRows",0),"fields":list(items[0].keys()) if items else [],"sample":items[:2]}
+
+        # Load forecast feeds
+        for feed in ["load_frcstd_7day","load_forecast_7day","hrl_load_metered","load_frcstd_7day_by_zone"]:
+            r = await c.get(f"{PJM_BASE}/{feed}",
+                params={"rowCount":"2","startRow":"1","datetime_beginning_ept":"Today"},
+                headers=h)
+            data = r.json() if r.status_code==200 else {}
+            items = data.get("items",[])
+            out[f"load_{feed}"] = {"status":r.status_code,"total_rows":data.get("totalRows",0),"fields":list(items[0].keys()) if items else [],"sample":items[:1]}
+
+        # Inst load — full area list
+        r = await c.get(f"{PJM_BASE}/inst_load",
+            params={"rowCount":"100","startRow":"1","datetime_beginning_ept":"5MinutesAgo"},
+            headers=h)
+        data = r.json() if r.status_code==200 else {}
+        items = data.get("items",[])
+        out["inst_load"] = {"status":r.status_code,"total_rows":data.get("totalRows",0),"all_areas":[i.get("area") for i in items],"fields":list(items[0].keys()) if items else []}
+
+        # Gen outages
+        r = await c.get(f"{PJM_BASE}/gen_outages_by_type",
+            params={"rowCount":"2","startRow":"1","datetime_beginning_ept":"Today"},
+            headers=h)
+        data = r.json() if r.status_code==200 else {}
+        items = data.get("items",[])
+        out["gen_outages_by_type"] = {"status":r.status_code,"fields":list(items[0].keys()) if items else [],"sample":items[:1]}
+
+        # EIA gas API
+        r = await c.get("https://api.eia.gov/v2/natural-gas/pri/sum/data/",
+            params={"api_key":"DEMO_KEY","frequency":"daily","data[0]":"value","facets[series][]": "RNGWHHD","length":"1"})
+        out["eia_gas"] = {"status":r.status_code,"sample":r.json().get("response",{}).get("data",[])[:1] if r.status_code==200 else r.text[:100]}
+
+    return JSONResponse(out)
 
 @app.get("/health")
 async def health():
