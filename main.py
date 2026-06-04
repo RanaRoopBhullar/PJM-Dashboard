@@ -85,7 +85,7 @@ async def fetch_lmps() -> list:
 # DA LMPs — verified fields: total_lmp_da, system_energy_price_da, congestion_price_da
 # ─────────────────────────────────────────────────────────────
 async def fetch_da_lmps() -> dict:
-    cached = cache_get("da_lmps", 3600)  # cache 1 hour
+    cached = cache_get("da_lmps", 1800)  # 30 min cache
     if cached: return cached
     if not PJM_API_KEY: return {}
 
@@ -362,15 +362,13 @@ async def fetch_news() -> list:
 # Polymarket
 # ─────────────────────────────────────────────────────────────
 POWER_KW = ["electricity","power","energy","PJM","ERCOT","natural gas","coal",
-            "solar","wind","megawatt","nuclear","utility","oil price","crude oil",
-            "LNG","pipeline","carbon","emissions","energy price","gas price",
-            "barrel","OPEC","refinery","electric grid","power grid","energy crisis"]
+            "solar","wind","megawatt","nuclear","oil price","crude oil","LNG",
+            "pipeline","carbon","emissions","energy price","gas price","barrel","OPEC"]
 
-# If a market is weather-related, only show if it mentions North American locations
-WEATHER_KW = ["temperature","heat","cold","storm","hurricane","tornado","rainfall","snow","freeze"]
-NA_LOCATIONS = ["us","usa","united states","america","canada","mexico","texas","california",
-                "florida","new york","chicago","houston","north america","midwest","east coast",
-                "west coast","gulf coast","pjm","miso","ercot","spp","wecc"]
+WEATHER_KW = ["temperature","heat wave","cold snap","hurricane","tornado","blizzard","freeze"]
+NA_LOCATIONS = ["united states","america","canada","texas","california","florida",
+                "new york","chicago","houston","north america","midwest","east coast",
+                "gulf coast","pjm","ercot","miso"]
 
 async def fetch_polymarket() -> list:
     cached = cache_get("polymarket", 300)
