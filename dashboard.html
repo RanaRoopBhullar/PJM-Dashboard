@@ -277,36 +277,30 @@ function renderGas(gas){
 
 function renderLoad(load){
   const el=document.getElementById('load-panel');
-  if(!load||(!load.forecast?.length&&!load.current_actual)){
+  if(!load||!load.current_mw){
     el.innerHTML='<div class="loading" style="font-size:11px;padding:10px;">Load data unavailable</div>';
     return;
   }
-  let html='';
-  if(load.current_actual){
-    const mw=load.current_actual;
-    const col=mw>110000?'var(--red)':mw>90000?'var(--amber)':'var(--green)';
-    html+=`<div style="padding:8px 10px;border-bottom:.5px solid var(--border);display:flex;align-items:center;gap:10px;">
-      <div><div style="font-size:10px;color:var(--t2);">Current RTO Load</div>
-      <div style="font-size:22px;font-weight:500;color:${col};">${fmtK(mw)} MW</div></div>
-      ${load.peak_forecast?`<div style="margin-left:auto;text-align:right;"><div style="font-size:10px;color:var(--t3);">Today's Peak Fcst</div><div style="font-size:14px;font-weight:500;">${fmtK(load.peak_forecast)} MW</div></div>`:''}
-    </div>`;
-  }
-  if(load.forecast&&load.forecast.length){
-    const recent=load.forecast.slice(-8);
-    const maxMW=Math.max(...recent.map(r=>r.mw||0));
-    html+=recent.map(r=>{
-      const hr=new Date(r.hour).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
-      const mw=r.mw||0;
-      const pct=maxMW>0?(mw/maxMW)*100:0;
-      const col=mw>110000?'var(--red)':mw>90000?'var(--amber)':'var(--blue)';
-      return `<div class="load-row">
-        <span class="ll">${hr}</span>
-        <span class="lv">${mw>0?fmtK(mw)+' MW':'—'}</span>
-        <div class="lbg"><div class="lbf" style="width:${pct.toFixed(0)}%;background:${col};"></div></div>
-      </div>`;
-    }).join('');
-  }
-  el.innerHTML=html||'<div class="loading" style="font-size:11px;padding:10px;">No load data</div>';
+  const mw=load.current_mw;
+  const col=mw>120000?'var(--red)':mw>100000?'var(--amber)':'var(--green)';
+  const chg=load.change_mw;
+  const chgHtml=chg?`<span style="font-size:11px;color:${chg>0?'var(--red)':'var(--green)'}">${chg>0?'+':''}${(chg/1000).toFixed(1)}k MW vs prev</span>`:'';
+  const ts=load.timestamp?new Date(load.timestamp).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+' ET':'';
+  el.innerHTML=`<div style="padding:10px 12px;">
+    <div style="font-size:10px;color:var(--t2);margin-bottom:3px;">PJM RTO Instantaneous Load${ts?' @ '+ts:''}</div>
+    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+      <div style="font-size:26px;font-weight:500;color:${col};">${(mw/1000).toFixed(1)}k MW</div>
+      ${chgHtml}
+    </div>
+    <div style="margin-top:8px;">
+      <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+        <div style="height:100%;width:${Math.min((mw/150000)*100,100).toFixed(0)}%;background:${col};border-radius:3px;"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--t3);margin-top:3px;">
+        <span>0</span><span>75k</span><span>100k</span><span>125k</span><span>150k MW</span>
+      </div>
+    </div>
+  </div>`;
 }
 
 function renderPreds(markets){
@@ -351,19 +345,11 @@ async function loadAll(){
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const d=await res.json();
 
-    // Fetch DA LMPs separately and store in daMap
-    try{
-      const da=await fetch(`${BASE}/api/debug/da`);
-      if(da.ok){
-        const daData=await da.json();
-        daMap={};
-        (daData.sample||[]).forEach(row=>{
-          const name=(row.pnode_name||'').toUpperCase();
-          const lmp=parseFloat(row.total_lmp_da||row.total_lmp||0);
-          if(name&&lmp) daMap[name]={lmp};
-        });
-      }
-    }catch(e){}
+    // DA LMPs now included in /api/all response
+    if(d.da&&d.da.length){
+      daMap={};
+      d.da.forEach(row=>{ if(row.name&&row.lmp) daMap[row.name.toUpperCase()]={lmp:row.lmp}; });
+    }
 
     if(d.lmps&&d.lmps.length){renderMetrics(d.lmps);renderTable(d.lmps);}
     if(d.intraday&&d.intraday.length) renderIntraday(d.intraday);
