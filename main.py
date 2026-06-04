@@ -1,5 +1,6 @@
 """
 PJM Power Dashboard — Backend Server
+Full trader monitor with LMPs, load forecast, gas prices, weather, news
 """
 
 import os
@@ -12,6 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import json
+import re
 
 load_dotenv()
 
@@ -39,6 +41,9 @@ PJM_HUBS = [
     "OHIO HUB", "DOMINION HUB", "ATSI GEN HUB", "WEST INT HUB",
 ]
 
+# ---------------------------------------------------------------------------
+# LMPs
+# ---------------------------------------------------------------------------
 async def fetch_lmps() -> list:
     cached = cache_get("lmps")
     if cached:
@@ -77,12 +82,14 @@ async def fetch_lmps() -> list:
 
         lmp  = float(row.get("total_lmp_rt") or 0)
         cong = float(row.get("congestion_price_rt") or 0)
-        # energy_lmp_rt is null in unverified feed — use system_energy_price_rt or estimate
-        energy = float(row.get("system_energy_price_rt") or row.get("energy_lmp_rt") or 0)
-        # If energy still zero, calculate: energy = lmp - congestion (loss is small, ~1-2%)
-        if energy == 0 and lmp != 0:
-            energy = round(lmp - cong, 4)
-        loss = round(lmp - energy - cong, 4)
+        # system_energy_price_rt is the energy component in unverified feed
+        sys_energy = row.get("system_energy_price_rt")
+        if sys_energy is not None:
+            energy = float(sys_energy)
+            loss   = round(lmp - energy - cong, 2)
+        else:
+            energy = round(lmp - cong, 2)
+            loss   = 0.0
 
         results.append({
             "name":       row.get("pnode_name"),
@@ -90,7 +97,7 @@ async def fetch_lmps() -> list:
             "lmp":        round(lmp, 2),
             "energy":     round(energy, 2),
             "congestion": round(cong, 2),
-            "loss":       round(loss, 2),
+            "loss":       loss,
             "hour":       latest_hour,
         })
 
@@ -102,6 +109,9 @@ async def fetch_lmps() -> list:
     return results
 
 
+# ---------------------------------------------------------------------------
+# Intraday chart
+# ---------------------------------------------------------------------------
 async def fetch_intraday() -> list:
     cached = cache_get("intraday")
     if cached:
@@ -130,19 +140,188 @@ async def fetch_intraday() -> list:
     return result
 
 
-async def fetch_lmps_debug() -> dict:
+# ---------------------------------------------------------------------------
+# Load Forecast
+# ---------------------------------------------------------------------------
+async def fetch_load_forecast() -> list:
+    cached = cache_get("load_forecast")
+    if cached:
+        return cached
+
     if not PJM_API_KEY:
-        return {"error": "no key"}
+        return []
+
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
-    params  = {"rowCount": "5", "startRow": "1", "type": "HUB", "datetime_beginning_ept": "Today", "order": "Desc", "sort": "datetime_beginning_ept"}
+    params  = {
+        "rowCount": "48", "startRow": "1",
+        "datetime_beginning_ept": "Today",
+        "order": "Asc", "sort": "datetime_beginning_ept",
+    }
+
     async with httpx.AsyncClient(timeout=20) as client:
-        r    = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps", params=params, headers=headers)
-        data = r.json() if r.status_code == 200 else {}
-    items = data.get("items", [])
-    return {"status": r.status_code, "total_rows": data.get("totalRows", 0), "latest_hour": items[0].get("datetime_beginning_ept") if items else None, "sample": items[:3]}
+        r = await client.get(f"{PJM_BASE}/load_frcstd_7day", params=params, headers=headers)
+        if r.status_code != 200:
+            return []
+        items = r.json().get("items", [])
+
+    result = []
+    for row in items:
+        result.append({
+            "hour":     row.get("datetime_beginning_ept", ""),
+            "forecast": float(row.get("total_load_forecast") or row.get("rto_total") or 0),
+            "actual":   float(row.get("actual_load") or row.get("rto_actual") or 0),
+        })
+
+    if result:
+        cache_set("load_forecast", result)
+    return result
 
 
-POWER_KEYWORDS = ["electricity", "power", "energy", "grid", "PJM", "ERCOT", "natural gas", "coal", "solar", "wind", "megawatt", "nuclear", "utility", "transmission"]
+# ---------------------------------------------------------------------------
+# Natural Gas Prices (EIA API — free, no key needed for basic data)
+# ---------------------------------------------------------------------------
+async def fetch_gas_prices() -> list:
+    cached = cache_get("gas_prices")
+    if cached:
+        return cached
+
+    # Use EIA open data for Henry Hub spot price
+    # Series: NG.RNGWHHD.D (Henry Hub Natural Gas Spot Price)
+    prices = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                "https://api.eia.gov/v2/natural-gas/pri/sum/data/",
+                params={
+                    "api_key": "DEMO_KEY",
+                    "frequency": "daily",
+                    "data[0]": "value",
+                    "facets[series][]": "RNGWHHD",
+                    "sort[0][column]": "period",
+                    "sort[0][direction]": "desc",
+                    "length": "5",
+                }
+            )
+            if r.status_code == 200:
+                data = r.json()
+                rows = data.get("response", {}).get("data", [])
+                for row in rows[:3]:
+                    prices.append({
+                        "hub":    "Henry Hub",
+                        "date":   row.get("period", ""),
+                        "price":  float(row.get("value") or 0),
+                        "unit":   "$/MMBtu",
+                    })
+    except Exception:
+        pass
+
+    # Fallback: scrape EIA gas page for regional hubs context
+    if not prices:
+        prices = [{"hub": "Henry Hub", "date": "N/A", "price": 0, "unit": "$/MMBtu — check EIA"}]
+
+    cache_set("gas_prices", prices)
+    return prices
+
+
+# ---------------------------------------------------------------------------
+# News — PJM alerts, NOAA weather, NRC nuclear, FERC, EIA
+# ---------------------------------------------------------------------------
+RSS_FEEDS = [
+    ("PJM Ops",     "https://www.pjm.com/rss/em-alerts",                                    True),   # Always include
+    ("NOAA",        "https://www.weather.gov/alerts/us.php?x=1",                             False),
+    ("NRC",         "https://www.nrc.gov/reading-rm/doc-collections/event-status/rss/en.xml",False),
+    ("FERC",        "https://www.ferc.gov/news-events/news/rss.xml",                         False),
+    ("EIA",         "https://www.eia.gov/rss/press_releases.xml",                            False),
+    ("PJM News",    "https://www.pjm.com/rss",                                              False),
+]
+
+ENERGY_KEYWORDS = [
+    "power", "energy", "electricity", "grid", "LMP", "capacity", "natural gas",
+    "coal", "solar", "wind", "PJM", "FERC", "megawatt", "MW", "transmission",
+    "congestion", "renewable", "nuclear", "generation", "utility", "outage",
+    "demand", "load", "fuel", "emissions", "carbon", "storage", "battery",
+    "pipeline", "curtailment", "emergency", "alert", "heat", "storm", "winter",
+    "summer", "peak", "frequency", "voltage", "substation", "reactor",
+]
+
+WEATHER_KEYWORDS = [
+    "heat", "storm", "hurricane", "tornado", "blizzard", "freeze", "cold",
+    "extreme", "warning", "watch", "advisory", "drought", "flood",
+    "mid-atlantic", "midwest", "ohio", "pennsylvania", "virginia", "illinois",
+    "new jersey", "maryland", "delaware", "indiana", "michigan",
+]
+
+async def fetch_news() -> list:
+    cached = cache_get("news")
+    if cached:
+        return cached
+
+    articles = []
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        for source, url, always_include in RSS_FEEDS:
+            try:
+                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 PJMDashboard/1.0"}, timeout=8)
+                if r.status_code != 200:
+                    continue
+                root  = ET.fromstring(r.text)
+                ns    = {"atom": "http://www.w3.org/2005/Atom"}
+                items = root.findall(".//item") or root.findall(".//atom:entry", ns)
+                for item in items[:20]:
+                    title   = (item.findtext("title") or item.findtext("atom:title", namespaces=ns) or "").strip()
+                    desc    = (item.findtext("description") or item.findtext("atom:summary", namespaces=ns) or "").strip()
+                    pub     = (item.findtext("pubDate") or item.findtext("atom:updated", namespaces=ns) or "").strip()
+                    link_el = item.find("atom:link", ns)
+                    link    = item.findtext("link") or (link_el.get("href") if link_el is not None else "") or ""
+                    combined = (title + " " + desc).lower()
+
+                    # Determine category
+                    is_weather = source == "NOAA" or any(k in combined for k in [w.lower() for w in WEATHER_KEYWORDS])
+                    is_nuclear = source == "NRC" or "nuclear" in combined or "reactor" in combined or "nrc" in combined
+                    is_energy  = any(k.lower() in combined for k in ENERGY_KEYWORDS)
+
+                    if always_include or is_energy or is_weather or is_nuclear:
+                        category = "⚡ Ops" if source == "PJM Ops" else "🌩 Weather" if is_weather else "☢ Nuclear" if is_nuclear else "📰 News"
+                        articles.append({
+                            "source":   source,
+                            "category": category,
+                            "title":    title,
+                            "snippet":  desc[:220].strip() + ("…" if len(desc) > 220 else ""),
+                            "pub":      pub[:25],
+                            "url":      link.strip(),
+                        })
+            except Exception:
+                continue
+
+    # Fallback
+    if not articles:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+            try:
+                r    = await client.get("https://www.eia.gov/rss/press_releases.xml", headers={"User-Agent": "Mozilla/5.0"})
+                root = ET.fromstring(r.text)
+                for item in root.findall(".//item")[:10]:
+                    articles.append({
+                        "source":   "EIA",
+                        "category": "📰 News",
+                        "title":    (item.findtext("title") or "").strip(),
+                        "snippet":  (item.findtext("description") or "")[:220].strip(),
+                        "pub":      (item.findtext("pubDate") or "")[:25],
+                        "url":      (item.findtext("link") or "").strip(),
+                    })
+            except Exception:
+                pass
+
+    # Sort: PJM Ops first, then by recency
+    articles.sort(key=lambda x: (0 if x["source"] == "PJM Ops" else 1, x.get("pub", "")), reverse=False)
+    cache_set("news", articles[:20])
+    return articles[:20]
+
+
+# ---------------------------------------------------------------------------
+# Polymarket
+# ---------------------------------------------------------------------------
+POWER_KEYWORDS = ["electricity", "power", "energy", "grid", "PJM", "ERCOT",
+                  "natural gas", "coal", "solar", "wind", "megawatt", "nuclear",
+                  "utility", "transmission", "oil", "gas", "LNG", "pipeline"]
 
 async def fetch_polymarket() -> list:
     cached = cache_get("polymarket")
@@ -150,7 +329,8 @@ async def fetch_polymarket() -> list:
         return cached
 
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get("https://gamma-api.polymarket.com/markets", params={"closed": "false", "limit": 200, "order": "volume", "ascending": "false"})
+        r = await client.get("https://gamma-api.polymarket.com/markets",
+                             params={"closed": "false", "limit": 200, "order": "volume", "ascending": "false"})
         r.raise_for_status()
         markets = r.json()
 
@@ -180,72 +360,24 @@ async def fetch_polymarket() -> list:
     return results
 
 
-RSS_FEEDS = [
-    ("EIA",        "https://www.eia.gov/rss/press_releases.xml"),
-    ("FERC",       "https://www.ferc.gov/news-events/news/rss.xml"),
-    ("PJM Alerts", "https://www.pjm.com/rss/em-alerts"),
-    ("DOE",        "https://www.energy.gov/rss.xml"),
-]
-
-ENERGY_KEYWORDS = ["power", "energy", "electricity", "grid", "LMP", "capacity", "natural gas",
-                   "coal", "solar", "wind", "PJM", "FERC", "megawatt", "transmission",
-                   "congestion", "renewable", "nuclear", "generation", "utility", "outage",
-                   "demand", "load", "fuel", "emissions", "carbon", "storage", "battery"]
-
-async def fetch_news() -> list:
-    cached = cache_get("news")
-    if cached:
-        return cached
-
-    articles = []
-    async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-        for source, url in RSS_FEEDS:
-            try:
-                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 PJMDashboard/1.0"})
-                if r.status_code != 200:
-                    continue
-                root  = ET.fromstring(r.text)
-                ns    = {"atom": "http://www.w3.org/2005/Atom"}
-                items = root.findall(".//item") or root.findall(".//atom:entry", ns)
-                for item in items[:15]:
-                    title   = (item.findtext("title") or item.findtext("atom:title", namespaces=ns) or "").strip()
-                    desc    = (item.findtext("description") or item.findtext("atom:summary", namespaces=ns) or "").strip()
-                    pub     = (item.findtext("pubDate") or item.findtext("atom:updated", namespaces=ns) or "").strip()
-                    link_el = item.find("atom:link", ns)
-                    link    = item.findtext("link") or (link_el.get("href") if link_el is not None else "") or ""
-                    # PJM Alerts always included regardless of keyword match
-                    if source == "PJM Alerts" or any(kw.lower() in (title + desc).lower() for kw in ENERGY_KEYWORDS):
-                        articles.append({
-                            "source":  source,
-                            "title":   title,
-                            "snippet": desc[:200].strip() + ("…" if len(desc) > 200 else ""),
-                            "pub":     pub[:25],
-                            "url":     link.strip(),
-                        })
-            except Exception:
-                continue
-
-    # Fallback: show all EIA items
-    if not articles:
-        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-            try:
-                r    = await client.get("https://www.eia.gov/rss/press_releases.xml", headers={"User-Agent": "Mozilla/5.0"})
-                root = ET.fromstring(r.text)
-                for item in root.findall(".//item")[:10]:
-                    articles.append({
-                        "source":  "EIA",
-                        "title":   (item.findtext("title") or "").strip(),
-                        "snippet": (item.findtext("description") or "")[:200].strip(),
-                        "pub":     (item.findtext("pubDate") or "")[:25],
-                        "url":     (item.findtext("link") or "").strip(),
-                    })
-            except Exception:
-                pass
-
-    cache_set("news", articles[:15])
-    return articles[:15]
+# ---------------------------------------------------------------------------
+# Debug
+# ---------------------------------------------------------------------------
+async def fetch_lmps_debug() -> dict:
+    if not PJM_API_KEY:
+        return {"error": "no key"}
+    headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
+    params  = {"rowCount": "5", "startRow": "1", "type": "HUB", "datetime_beginning_ept": "Today", "order": "Desc", "sort": "datetime_beginning_ept"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r    = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps", params=params, headers=headers)
+        data = r.json() if r.status_code == 200 else {}
+    items = data.get("items", [])
+    return {"status": r.status_code, "total_rows": data.get("totalRows", 0), "latest_hour": items[0].get("datetime_beginning_ept") if items else None, "sample": items[:3]}
 
 
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 @app.get("/api/lmps")
 async def api_lmps():
     try:
@@ -266,6 +398,20 @@ async def api_intraday():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/load")
+async def api_load():
+    try:
+        return JSONResponse(await fetch_load_forecast())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/gas")
+async def api_gas():
+    try:
+        return JSONResponse(await fetch_gas_prices())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/polymarket")
 async def api_polymarket():
     try:
@@ -282,13 +428,16 @@ async def api_news():
 
 @app.get("/api/all")
 async def api_all():
-    lmps, intraday, markets, news = await asyncio.gather(
-        fetch_lmps(), fetch_intraday(), fetch_polymarket(), fetch_news(),
+    lmps, intraday, load, gas, markets, news = await asyncio.gather(
+        fetch_lmps(), fetch_intraday(), fetch_load_forecast(),
+        fetch_gas_prices(), fetch_polymarket(), fetch_news(),
         return_exceptions=True,
     )
     return JSONResponse({
         "lmps":      lmps     if not isinstance(lmps, Exception)     else [],
         "intraday":  intraday if not isinstance(intraday, Exception)  else [],
+        "load":      load     if not isinstance(load, Exception)      else [],
+        "gas":       gas      if not isinstance(gas, Exception)       else [],
         "markets":   markets  if not isinstance(markets, Exception)   else [],
         "news":      news     if not isinstance(news, Exception)      else [],
         "updated_at": datetime.now(timezone.utc).isoformat(),
