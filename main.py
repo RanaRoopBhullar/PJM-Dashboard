@@ -62,22 +62,34 @@ async def fetch_lmps() -> list:
 
     now_et = get_eastern_now()
     rows = []
+    used_hour = ""
 
-    # Try up to 3 hours back to find data
     async with httpx.AsyncClient(timeout=20) as client:
-        for hours_back in range(0, 4):
+        for hours_back in range(0, 5):
             try_et = now_et - timedelta(hours=hours_back)
+            # PJM expects format: "2026-06-04 11:00" with no leading zero issues
             dt_str = try_et.strftime("%Y-%m-%d %H:00")
+
+            # Use the correct PJM filter syntax from their API spec
             params = {
-                "startRow": 1,
-                "rowCount": 500,
+                "rowCount": "500",
+                "startRow": "1",
+                "fields": "datetime_beginning_ept,pnode_id,pnode_name,type,row_is_current,version_nbr,zone,zone,voltage,equipment,system_energy_price_rt,congestion_price_rt,marginal_loss_lmp_rt,total_lmp_rt,energy_lmp_rt",
                 "datetime_beginning_ept": dt_str,
             }
-            r = await client.get(f"{PJM_BASE}/rt_hrl_lmps", params=params, headers=headers)
+
+            r = await client.get(
+                f"{PJM_BASE}/rt_hrl_lmps",
+                params=params,
+                headers=headers
+            )
+
             if r.status_code == 200:
                 data = r.json()
-                rows = data.get("items", [])
-                if rows:
+                items = data.get("items", [])
+                if items:
+                    rows = items
+                    used_hour = dt_str
                     break
 
     if not rows:
@@ -90,7 +102,7 @@ async def fetch_lmps() -> list:
         if name in PJM_HUBS and name not in seen:
             seen.add(name)
             lmp    = float(row.get("total_lmp_rt") or 0)
-            energy = float(row.get("energy_lmp_rt") or 0)
+            energy = float(row.get("energy_lmp_rt") or row.get("system_energy_price_rt") or 0)
             cong   = float(row.get("congestion_price_rt") or 0)
             loss   = float(row.get("marginal_loss_lmp_rt") or 0)
             results.append({
@@ -100,7 +112,7 @@ async def fetch_lmps() -> list:
                 "energy":     round(energy, 2),
                 "congestion": round(cong, 2),
                 "loss":       round(loss, 2),
-                "hour":       row.get("datetime_beginning_ept", ""),
+                "hour":       used_hour,
             })
 
     order = {h: i for i, h in enumerate(PJM_HUBS)}
@@ -120,16 +132,17 @@ async def fetch_intraday() -> list:
         return []
 
     now_et = get_eastern_now()
-    start  = now_et.strftime("%Y-%m-%d 00:00")
-    end    = now_et.strftime("%Y-%m-%d %H:00")
+    # Get last 12 hours of Western Hub data
+    end_dt   = now_et.strftime("%Y-%m-%d %H:00")
+    start_dt = (now_et - timedelta(hours=12)).strftime("%Y-%m-%d %H:00")
 
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
     params = {
-        "startRow": 1,
-        "rowCount": 24,
+        "rowCount": "24",
+        "startRow": "1",
         "pnode_name": "WESTERN HUB",
-        "datetime_beginning_ept": start,
-        "datetime_ending_ept": end,
+        "datetime_beginning_ept": start_dt,
+        "datetime_ending_ept": end_dt,
     }
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -147,25 +160,29 @@ async def fetch_intraday() -> list:
     return result
 
 
-# Debug endpoint — shows raw PJM response
 async def fetch_lmps_debug() -> dict:
     if not PJM_API_KEY:
         return {"error": "no key"}
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
     now_et = get_eastern_now()
-    debug_info = {}
+    debug_info = {"eastern_now": now_et.strftime("%Y-%m-%d %H:%M"), "attempts": {}}
+
     async with httpx.AsyncClient(timeout=20) as client:
         for hours_back in range(0, 4):
             try_et = now_et - timedelta(hours=hours_back)
             dt_str = try_et.strftime("%Y-%m-%d %H:00")
-            params = {"startRow": 1, "rowCount": 5, "datetime_beginning_ept": dt_str}
+            params = {"rowCount": "5", "startRow": "1", "datetime_beginning_ept": dt_str}
             r = await client.get(f"{PJM_BASE}/rt_hrl_lmps", params=params, headers=headers)
-            data = r.json() if r.status_code == 200 else {"error": r.status_code, "body": r.text[:500]}
+            try:
+                data = r.json()
+            except Exception:
+                data = {"raw": r.text[:300]}
             items = data.get("items", []) if isinstance(data, dict) else []
-            debug_info[f"hour_minus_{hours_back}_{dt_str}"] = {
+            debug_info["attempts"][dt_str] = {
                 "status": r.status_code,
+                "total_rows": data.get("totalRows", "?") if isinstance(data, dict) else "?",
                 "item_count": len(items),
-                "sample": items[:2] if items else data
+                "sample_pnodes": [i.get("pnode_name") for i in items[:3]],
             }
     return debug_info
 
@@ -254,7 +271,6 @@ async def fetch_news() -> list:
             except Exception:
                 continue
 
-    # Fallback — show all EIA items if nothing matched
     if not articles:
         async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
             try:
