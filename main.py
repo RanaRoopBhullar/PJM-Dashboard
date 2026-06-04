@@ -275,7 +275,7 @@ async def fetch_news() -> list:
                 articles.append({
                     "source":"PJM Load","category":"📊 Market",
                     "title":f"{color} System Load: {mw/1000:.1f}k MW — {level}",
-                    "snippet":f"PJM RTO instantaneous load: {mw:,.0f} MW{f' ({load[\"change_mw\"]:+,.0f} MW vs prev interval)' if load.get('change_mw') else ''}",
+                    "snippet":f"PJM RTO instantaneous load: {mw:,.0f} MW" + (f" ({load['change_mw']:+,.0f} MW vs prev interval)" if load.get('change_mw') else ""),
                     "pub":load.get("timestamp","")[:16],
                     "url":"https://dataminer2.pjm.com/feed/inst_load",
                 })
