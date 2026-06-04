@@ -1,5 +1,6 @@
 """
 PJM Power Dashboard — Backend Server
+Hub names verified from PJM API response
 """
 
 import os
@@ -33,30 +34,21 @@ def cache_get(key):
 def cache_set(key, data):
     _cache[key] = {"ts": datetime.now(timezone.utc).timestamp(), "data": data}
 
-# Exact pnode_name values as they appear in PJM data
+# Exact hub names as returned by PJM API (verified from debug)
 PJM_HUBS = [
-    "WESTERN HUB", "EASTERN HUB", "AEP-DAYTON HUB",
-    "N ILLINOIS HUB", "NI HUB", "PECO", "PPL", "BGE", "DOMINION"
+    "WESTERN HUB",
+    "EASTERN HUB",
+    "AEP-DAYTON HUB",
+    "N ILLINOIS HUB",
+    "NEW JERSEY HUB",
+    "CHICAGO HUB",
+    "CHICAGO GEN HUB",
+    "AEP GEN HUB",
+    "OHIO HUB",
+    "DOMINION HUB",
+    "ATSI GEN HUB",
+    "WEST INT HUB",
 ]
-
-async def fetch_all_lmp_rows(client, feed, dt_keyword, row_count=500, start_row=1):
-    """Fetch a page of LMP rows from PJM."""
-    headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
-    params  = {
-        "rowCount":               str(row_count),
-        "startRow":               str(start_row),
-        "datetime_beginning_ept": dt_keyword,
-        "order":                  "Asc",
-        "sort":                   "pnode_name",
-    }
-    r = await client.get(f"{PJM_BASE}/{feed}", params=params, headers=headers)
-    if r.status_code != 200:
-        return [], 0
-    data       = r.json()
-    items      = data.get("items", [])
-    total_rows = int(data.get("totalRows", 0))
-    return items, total_rows
-
 
 async def fetch_lmps() -> list:
     cached = cache_get("lmps")
@@ -66,55 +58,59 @@ async def fetch_lmps() -> list:
     if not PJM_API_KEY:
         raise HTTPException(status_code=503, detail="PJM_API_KEY not configured")
 
-    hubs_upper = {h.upper(): h for h in PJM_HUBS}
-    results    = {}
+    headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
+
+    # Fetch all hub rows for today, sorted desc so latest hour is first
+    params = {
+        "rowCount":               "500",
+        "startRow":               "1",
+        "type":                   "HUB",
+        "datetime_beginning_ept": "Today",
+        "order":                  "Desc",
+        "sort":                   "datetime_beginning_ept",
+    }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        # Page through results until we find all hubs or exhaust data
-        start_row  = 1
-        page_size  = 500
-        total_rows = None
+        r = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps", params=params, headers=headers)
+        if r.status_code != 200:
+            return []
+        items = r.json().get("items", [])
 
-        while len(results) < len(PJM_HUBS):
-            if total_rows is not None and start_row > total_rows:
-                break
+    if not items:
+        return []
 
-            items, total_rows = await fetch_all_lmp_rows(
-                client, "rt_unverified_hrl_lmps", "LastHour", page_size, start_row
-            )
-            if not items:
-                break
+    # Find the latest hour available
+    latest_hour = items[0].get("datetime_beginning_ept", "")
 
-            for row in items:
-                name = (row.get("pnode_name") or "").upper().strip()
-                if name in hubs_upper and name not in results:
-                    lmp    = float(row.get("total_lmp_rt") or row.get("total_lmp") or 0)
-                    energy = float(row.get("energy_lmp_rt") or row.get("system_energy_price_rt") or 0)
-                    cong   = float(row.get("congestion_price_rt") or row.get("congestion_price") or 0)
-                    loss   = float(row.get("marginal_loss_lmp_rt") or row.get("marginal_loss_lmp") or 0)
-                    results[name] = {
-                        "name":       row.get("pnode_name"),
-                        "type":       row.get("type", "Hub"),
-                        "lmp":        round(lmp, 2),
-                        "energy":     round(energy, 2),
-                        "congestion": round(cong, 2),
-                        "loss":       round(loss, 2),
-                        "hour":       row.get("datetime_beginning_ept", ""),
-                    }
+    # Filter to latest hour only, one row per hub
+    seen    = set()
+    results = []
+    for row in items:
+        if row.get("datetime_beginning_ept") != latest_hour:
+            continue
+        name = (row.get("pnode_name") or "").upper().strip()
+        if name not in seen:
+            seen.add(name)
+            lmp    = float(row.get("total_lmp_rt") or row.get("total_lmp") or 0)
+            energy = float(row.get("energy_lmp_rt") or row.get("system_energy_price_rt") or 0)
+            cong   = float(row.get("congestion_price_rt") or row.get("congestion_price") or 0)
+            loss   = float(row.get("marginal_loss_lmp_rt") or row.get("marginal_loss_lmp") or 0)
+            results.append({
+                "name":       row.get("pnode_name"),
+                "type":       "Hub",
+                "lmp":        round(lmp, 2),
+                "energy":     round(energy, 2),
+                "congestion": round(cong, 2),
+                "loss":       round(loss, 2),
+                "hour":       latest_hour,
+            })
 
-            start_row += page_size
+    order = {h.upper(): i for i, h in enumerate(PJM_HUBS)}
+    results.sort(key=lambda x: order.get(x["name"].upper().strip(), 99))
 
-            # Stop if we found everything
-            if len(results) == len(PJM_HUBS):
-                break
-
-    # Sort by preferred order
-    order     = {h.upper(): i for i, h in enumerate(PJM_HUBS)}
-    final     = sorted(results.values(), key=lambda x: order.get(x["name"].upper().strip(), 99))
-
-    if final:
-        cache_set("lmps", final)
-    return final
+    if results:
+        cache_set("lmps", results)
+    return results
 
 
 async def fetch_intraday() -> list:
@@ -131,6 +127,8 @@ async def fetch_intraday() -> list:
         "startRow":               "1",
         "pnode_name":             "WESTERN HUB",
         "datetime_beginning_ept": "Today",
+        "order":                  "Asc",
+        "sort":                   "datetime_beginning_ept",
     }
 
     async with httpx.AsyncClient(timeout=20) as client:
@@ -139,13 +137,12 @@ async def fetch_intraday() -> list:
             return []
         items = r.json().get("items", [])
 
-    rows_sorted = sorted(items, key=lambda x: x.get("datetime_beginning_ept", ""))
     result = [
         {
             "hour": row.get("datetime_beginning_ept", ""),
             "lmp":  round(float(row.get("total_lmp_rt") or row.get("total_lmp") or 0), 2)
         }
-        for row in rows_sorted
+        for row in items
     ]
 
     if result:
@@ -157,29 +154,34 @@ async def fetch_lmps_debug() -> dict:
     if not PJM_API_KEY:
         return {"error": "no key"}
     headers = {"Ocp-Apim-Subscription-Key": PJM_API_KEY, "Accept": "application/json"}
-    debug   = {}
 
+    params = {
+        "rowCount": "20", "startRow": "1",
+        "type": "HUB",
+        "datetime_beginning_ept": "Today",
+        "order": "Desc", "sort": "datetime_beginning_ept",
+    }
     async with httpx.AsyncClient(timeout=20) as client:
-        # Check what pnode_names look like for hubs specifically
-        for kw in ["LastHour", "Today"]:
-            params = {
-                "rowCount": "500", "startRow": "1",
-                "datetime_beginning_ept": kw,
-                "type": "HUB",
+        r = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps", params=params, headers=headers)
+        data  = r.json() if r.status_code == 200 else {}
+        items = data.get("items", [])
+
+    return {
+        "status":      r.status_code,
+        "total_rows":  data.get("totalRows", 0),
+        "item_count":  len(items),
+        "latest_hour": items[0].get("datetime_beginning_ept") if items else None,
+        "sample": [
+            {
+                "pnode_name":   i.get("pnode_name"),
+                "hour":         i.get("datetime_beginning_ept"),
+                "total_lmp_rt": i.get("total_lmp_rt"),
+                "energy_lmp_rt": i.get("energy_lmp_rt"),
+                "congestion_price_rt": i.get("congestion_price_rt"),
             }
-            r = await client.get(f"{PJM_BASE}/rt_unverified_hrl_lmps", params=params, headers=headers)
-            try:
-                data = r.json()
-            except Exception:
-                data = {}
-            items = data.get("items", []) if isinstance(data, dict) else []
-            debug[f"hubs_only|{kw}"] = {
-                "status":      r.status_code,
-                "total_rows":  data.get("totalRows", "?"),
-                "item_count":  len(items),
-                "pnode_names": [i.get("pnode_name") for i in items[:20]],
-            }
-    return debug
+            for i in items[:5]
+        ]
+    }
 
 
 POWER_KEYWORDS = ["electricity", "power", "energy", "grid", "PJM", "ERCOT",
