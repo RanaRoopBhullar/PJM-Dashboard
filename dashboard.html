@@ -8,21 +8,18 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
 :root{
-  --bg:#0c0c0b; --panel:#161614; --card:#1d1d1b; --border:rgba(255,255,255,0.07);
-  --bord2:rgba(255,255,255,0.14); --t1:#eeede6; --t2:#a09e96; --t3:#585752;
-  --green:#97C459; --gbg:rgba(20,50,3,.55); --red:#F09595; --rbg:rgba(75,16,16,.55);
-  --amber:#EF9F27; --abg:rgba(62,34,2,.55); --blue:#85B7EB; --bbg:rgba(3,42,80,.55);
+  --bg:#0c0c0b;--panel:#161614;--card:#1d1d1b;--border:rgba(255,255,255,0.07);
+  --bord2:rgba(255,255,255,0.14);--t1:#eeede6;--t2:#a09e96;--t3:#585752;
+  --green:#97C459;--gbg:rgba(20,50,3,.55);--red:#F09595;--rbg:rgba(75,16,16,.55);
+  --amber:#EF9F27;--abg:rgba(62,34,2,.55);--blue:#85B7EB;--bbg:rgba(3,42,80,.55);
   --r:7px;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;background:var(--bg);color:var(--t1);min-height:100vh;padding:8px;}
-/* Layout */
 .dash{display:grid;grid-template-columns:1fr 1fr 1fr 290px;gap:7px;}
-/* Topbar */
 .topbar{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--panel);border-radius:var(--r);border:.5px solid var(--border);flex-wrap:wrap;}
 .tb-title{font-size:14px;font-weight:500;}
 .tb-meta{font-size:11px;color:var(--t2);margin-left:auto;}
-/* Chips */
 .snapbar{grid-column:1/-1;display:flex;gap:5px;flex-wrap:wrap;}
 .chip{background:var(--panel);border:.5px solid var(--border);border-radius:var(--r);padding:4px 10px;font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--t1);}
 .chip:hover{border-color:var(--bord2);}
@@ -31,40 +28,28 @@ body{font-family:system-ui,-apple-system,sans-serif;font-size:13px;background:va
 .dot-load{background:#BA7517;animation:pulse 1s infinite;}
 .dot-err{background:#E24B4A;}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-/* Badges */
 .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:500;white-space:nowrap;border:.5px solid transparent;}
 .b-live{background:rgba(99,153,34,.2);color:var(--green);border-color:rgba(99,153,34,.4);}
 .b-load{background:rgba(186,117,23,.2);color:var(--amber);border-color:rgba(186,117,23,.4);}
 .b-err{background:rgba(226,75,74,.2);color:var(--red);border-color:rgba(226,75,74,.4);}
-/* Panels */
 .panel{background:var(--panel);border-radius:var(--r);border:.5px solid var(--border);overflow:hidden;}
 .ph{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:.5px solid var(--border);font-size:10px;font-weight:500;color:var(--t2);letter-spacing:.05em;text-transform:uppercase;}
 .ph .cnt{background:var(--card);border:.5px solid var(--border);border-radius:10px;padding:1px 6px;font-size:10px;margin-left:3px;}
 .obtn{margin-left:auto;font-size:10px;padding:2px 7px;border-radius:4px;background:var(--card);border:.5px solid var(--border);color:var(--t2);cursor:pointer;text-decoration:none;white-space:nowrap;}
 .obtn:hover{border-color:var(--bord2);color:var(--t1);}
-/* Metric cards */
 .mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;padding:7px;}
 .mc{background:var(--card);border-radius:var(--r);border:.5px solid var(--border);padding:7px 9px;}
 .mc-label{font-size:10px;color:var(--t2);margin-bottom:2px;}
 .mc-val{font-size:20px;font-weight:500;}
 .mc-sub{font-size:10px;margin-top:2px;color:var(--t3);}
 .up{color:var(--green);}.dn{color:var(--red);}.hi{color:var(--amber);}
-/* LMP Table */
 table{width:100%;border-collapse:collapse;}
 th{font-size:10px;color:var(--t3);padding:3px 8px;text-align:left;border-bottom:.5px solid var(--border);font-weight:400;}
 td{padding:4px 8px;font-size:12px;border-bottom:.5px solid var(--border);vertical-align:middle;}
 tr:last-child td{border-bottom:none;}
 tr:hover td{background:var(--card);}
 .tpad{padding:0 7px 7px;overflow-x:auto;}
-/* Spark */
 .sp svg{display:block;}
-/* Bars */
-.barbg{flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;}
-.barfill{height:100%;border-radius:2px;}
-.prow{display:flex;align-items:center;gap:5px;font-size:11px;margin-bottom:3px;}
-.plabel{min-width:32px;color:var(--t2);}
-.ppct{min-width:30px;font-weight:500;text-align:right;font-size:11px;}
-/* News */
 .ni{padding:7px 10px;border-bottom:.5px solid var(--border);cursor:pointer;}
 .ni:last-child{border-bottom:none;}
 .ni:hover{background:var(--card);}
@@ -72,28 +57,31 @@ tr:hover td{background:var(--card);}
 .ni-cat{font-size:9px;padding:1px 5px;border-radius:3px;background:var(--card);border:.5px solid var(--border);}
 .ni-hl{font-size:12px;font-weight:500;line-height:1.3;margin-bottom:2px;}
 .ni-snip{font-size:11px;color:var(--t2);line-height:1.35;}
-/* Prediction */
-.pi{padding:7px 10px;border-bottom:.5px solid var(--border);}
-.pi:last-child{border-bottom:none;}
-.pi-title{font-size:11px;font-weight:500;line-height:1.3;margin-bottom:3px;}
-.pi-meta{font-size:10px;color:var(--t3);margin-bottom:4px;}
-/* Gas strip */
-.gas-wrap{display:flex;}
-.gas-cell{flex:1;padding:8px 10px;border-right:.5px solid var(--border);}
-.gas-cell:last-child{border-right:none;}
-.gas-hub{font-size:10px;color:var(--t2);margin-bottom:2px;}
-.gas-px{font-size:20px;font-weight:500;}
-.gas-unit{font-size:10px;color:var(--t3);}
-/* Load */
-.load-row{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:.5px solid var(--border);font-size:12px;}
-.load-row:last-child{border-bottom:none;}
-.ll{min-width:50px;font-size:11px;color:var(--t2);}
-.lv{min-width:65px;font-weight:500;}
-.lbg{flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden;}
-.lbf{height:100%;border-radius:3px;}
-/* Chart */
 .cwrap{padding:7px 10px 10px;}
-/* Layout */
+/* Fuel mix bars */
+.fuel-row{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:.5px solid var(--border);}
+.fuel-row:last-child{border-bottom:none;}
+.fuel-label{min-width:70px;font-size:11px;color:var(--t2);}
+.fuel-mw{min-width:60px;font-size:11px;font-weight:500;text-align:right;}
+.fuel-bg{flex:1;height:5px;background:var(--border);border-radius:3px;overflow:hidden;}
+.fuel-fill{height:100%;border-radius:3px;}
+.fuel-pct{min-width:32px;font-size:10px;color:var(--t3);text-align:right;}
+/* Load gauge */
+.load-wrap{padding:10px 12px;}
+.load-gauge{height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin:6px 0 3px;}
+.load-fill{height:100%;border-radius:3px;transition:width .5s;}
+.load-scale{display:flex;justify-content:space-between;font-size:9px;color:var(--t3);}
+/* Outage table */
+.otrow{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:.5px solid var(--border);font-size:11px;}
+.otrow:last-child{border-bottom:none;}
+.otdate{min-width:70px;color:var(--t2);}
+.otmw{font-weight:500;}
+.otbg{flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;}
+.otfill{height:100%;border-radius:2px;background:var(--red);}
+/* Sys energy card */
+.energy-card{padding:10px 12px;}
+.energy-val{font-size:24px;font-weight:500;}
+.energy-sub{font-size:10px;color:var(--t3);margin-top:3px;}
 .col3{grid-column:1/4;}
 .sidebar{grid-column:4/5;display:flex;flex-direction:column;gap:7px;}
 a{color:var(--blue);text-decoration:none;}
@@ -143,21 +131,31 @@ a:hover{text-decoration:underline;}
 
 <!-- Sidebar -->
 <div class="sidebar">
-  <!-- Gas -->
+
+  <!-- System Energy / Gas Proxy -->
   <div class="panel">
-    <div class="ph"><i class="ti ti-flame" style="font-size:13px;"></i> Natural Gas — Spot <a href="https://www.eia.gov/naturalgas/weekly/" target="_blank" class="obtn">EIA ↗</a></div>
-    <div id="gas-panel"><div class="loading">Loading…</div></div>
+    <div class="ph"><i class="ti ti-flame" style="font-size:13px;"></i> System Energy Price <a href="https://dataminer2.pjm.com/feed/rt_unverified_hrl_lmps" target="_blank" class="obtn">PJM ↗</a></div>
+    <div id="energy-panel"><div class="loading">Loading…</div></div>
   </div>
-  <!-- Load -->
+
+  <!-- System Load -->
   <div class="panel">
     <div class="ph"><i class="ti ti-topology-star" style="font-size:13px;"></i> PJM System Load <a href="https://dataminer2.pjm.com/feed/inst_load" target="_blank" class="obtn">PJM ↗</a></div>
     <div id="load-panel"><div class="loading">Loading…</div></div>
   </div>
-  <!-- Markets -->
+
+  <!-- Generation Fuel Mix -->
   <div class="panel">
-    <div class="ph"><i class="ti ti-chart-bar" style="font-size:13px;"></i> Prediction Markets <span class="cnt" id="pred-cnt">—</span> <a href="https://polymarket.com" target="_blank" class="obtn">Polymarket ↗</a></div>
-    <div id="pred-list"><div class="loading">Loading…</div></div>
+    <div class="ph"><i class="ti ti-chart-pie" style="font-size:13px;"></i> Generation Fuel Mix <a href="https://dataminer2.pjm.com" target="_blank" class="obtn">PJM ↗</a></div>
+    <div id="fuel-panel"><div class="loading">Loading…</div></div>
   </div>
+
+  <!-- Outage Forecast -->
+  <div class="panel">
+    <div class="ph"><i class="ti ti-alert-triangle" style="font-size:13px;"></i> Outage Forecast <a href="https://dataminer2.pjm.com/feed/frcstd_gen_outages" target="_blank" class="obtn">PJM ↗</a></div>
+    <div id="outage-panel"><div class="loading">Loading…</div></div>
+  </div>
+
 </div>
 
 <!-- News -->
@@ -177,7 +175,7 @@ a:hover{text-decoration:underline;}
 <script>
 const BASE = window.location.origin;
 let chart = null;
-let daMap = {};  // global, populated before renderTable is called
+let daMap = {};
 
 const fmt  = v => Number(v).toFixed(2);
 const fmtK = v => v > 0 ? (v/1000).toFixed(1)+'k' : '—';
@@ -205,9 +203,9 @@ function spark(vals){
 
 function renderMetrics(lmps){
   document.getElementById('metric-grid').innerHTML=lmps.slice(0,4).map(d=>{
-    const cl=d.lmp>80?'hi':d.lmp>50?'up':'';
-    const key=(d.name||'').toUpperCase().trim().replace(/\s+/g,' ');
+    const key=(d.name||'').toUpperCase().trim();
     const da=daMap[key];
+    const cl=d.lmp>80?'hi':d.lmp>50?'up':'';
     const spread=da?` DA$${fmt(da.lmp)}`:'';
     return `<div class="mc"><div class="mc-label">${d.name}</div><div class="mc-val ${cl}">$${fmt(d.lmp)}</div><div class="mc-sub">E:$${fmt(d.energy)} C:${d.congestion>=0?'+':''}$${fmt(d.congestion)}${spread}</div></div>`;
   }).join('');
@@ -219,13 +217,13 @@ function renderTable(lmps){
     const pc=d.lmp>90?'var(--red)':d.lmp>60?'var(--amber)':'var(--t1)';
     const cc=d.congestion>=0?'var(--red)':'var(--green)';
     const lc=d.loss>0.5?'var(--amber)':d.loss<-0.5?'var(--green)':'var(--t3)';
-    const key=(d.name||'').toUpperCase().trim().replace(/\s+/g,' ');
+    const key=(d.name||'').toUpperCase().trim();
     const da=daMap[key];
     const daCell=da?`$${fmt(da.lmp)}`:'—';
     const spVal=da?d.lmp-da.lmp:null;
     const spCell=spVal!==null?`<span style="color:${spVal>5?'var(--red)':spVal<-5?'var(--green)':'var(--t2)'}">${spVal>=0?'+':''}$${fmt(spVal)}</span>`:'—';
     return `<tr>
-      <td><strong style="font-size:12px;">${d.name}</strong></td>
+      <td><strong>${d.name}</strong></td>
       <td style="font-weight:500;color:${pc};">$${fmt(d.lmp)}</td>
       <td>$${fmt(d.energy)}</td>
       <td style="color:${cc};">${d.congestion>=0?'+':''}$${fmt(d.congestion)}</td>
@@ -248,34 +246,31 @@ function renderIntraday(intraday){
   const colors=values.map(v=>v>80?'#F09595':v>60?'#EF9F27':'#85B7EB');
   const avg=values.length?values.reduce((a,b)=>a+b,0)/values.length:0;
   if(chart)chart.destroy();
-  chart=new Chart(ctx,{
-    type:'bar',
-    data:{labels,datasets:[
-      {label:'LMP',data:values,backgroundColor:colors,borderWidth:0,borderRadius:2},
-      {label:'Avg',data:Array(values.length).fill(avg),type:'line',borderColor:'rgba(255,255,255,0.15)',borderDash:[4,4],borderWidth:1,pointRadius:0,fill:false}
-    ]},
-    options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`$${c.parsed.y.toFixed(2)}/MWh`}}},
-      scales:{
-        x:{ticks:{font:{size:9},color:'#585752',maxRotation:0,autoSkip:true,maxTicksLimit:12},grid:{display:false}},
-        y:{ticks:{font:{size:9},color:'#585752',callback:v=>`$${v.toFixed(0)}`},grid:{color:'rgba(255,255,255,0.04)'}}
-      }
+  chart=new Chart(ctx,{type:'bar',data:{labels,datasets:[
+    {label:'LMP',data:values,backgroundColor:colors,borderWidth:0,borderRadius:2},
+    {label:'Avg',data:Array(values.length).fill(avg),type:'line',borderColor:'rgba(255,255,255,0.15)',borderDash:[4,4],borderWidth:1,pointRadius:0,fill:false}
+  ]},options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`$${c.parsed.y.toFixed(2)}/MWh`}}},
+    scales:{
+      x:{ticks:{font:{size:9},color:'#585752',maxRotation:0,autoSkip:true,maxTicksLimit:12},grid:{display:false}},
+      y:{ticks:{font:{size:9},color:'#585752',callback:v=>`$${v.toFixed(0)}`},grid:{color:'rgba(255,255,255,0.04)'}}
     }
-  });
+  }});
 }
 
-function renderGas(gas){
-  const el=document.getElementById('gas-panel');
-  if(!gas||!gas.length||gas[0].price===0){
-    el.innerHTML=`<div class="loading" style="font-size:11px;padding:10px;">Henry Hub: check <a href="https://www.eia.gov/naturalgas/weekly/" target="_blank">EIA.gov</a> — API rate limited</div>`;
-    return;
-  }
-  el.innerHTML=`<div class="gas-wrap">${gas.map(g=>`
-    <div class="gas-cell">
-      <div class="gas-hub">${g.hub}</div>
-      <div class="gas-px ${g.price>3?'hi':g.price>2?'up':''}">$${fmt(g.price)}</div>
-      <div class="gas-unit">${g.unit} · ${g.date}</div>
-    </div>`).join('')}</div>`;
+function renderEnergy(sysEnergy, lmps){
+  const el=document.getElementById('energy-panel');
+  // Use system energy price from LMP data
+  const price = sysEnergy?.price || (lmps.length ? lmps[0].energy : 0);
+  const hour  = sysEnergy?.hour  || (lmps.length ? lmps[0].hour  : '');
+  const ts    = hour ? new Date(hour).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+' ET' : '';
+  const col   = price>50?'var(--red)':price>35?'var(--amber)':'var(--green)';
+  el.innerHTML=`<div class="energy-card">
+    <div style="font-size:10px;color:var(--t2);margin-bottom:3px;">RT System Marginal Energy Cost${ts?' @ '+ts:''}</div>
+    <div class="energy-val" style="color:${col};">$${fmt(price)}<span style="font-size:13px;color:var(--t3);font-weight:400;">/MWh</span></div>
+    <div class="energy-sub">Systemwide marginal cost of energy — closely tracks gas prices.<br>
+    For Henry Hub: <a href="https://www.eia.gov/naturalgas/weekly/" target="_blank">EIA.gov ↗</a></div>
+  </div>`;
 }
 
 function renderLoad(load){
@@ -285,40 +280,59 @@ function renderLoad(load){
     return;
   }
   const mw=load.current_mw;
-  const col=mw>120000?'var(--red)':mw>100000?'var(--amber)':'var(--green)';
+  const col=mw>130000?'var(--red)':mw>110000?'var(--amber)':'var(--green)';
   const chg=load.change_mw;
-  const chgHtml=chg?`<span style="font-size:11px;color:${chg>0?'var(--red)':'var(--green)'}">${chg>0?'+':''}${(chg/1000).toFixed(1)}k MW vs prev</span>`:'';
   const ts=load.timestamp?new Date(load.timestamp).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+' ET':'';
-  el.innerHTML=`<div style="padding:10px 12px;">
-    <div style="font-size:10px;color:var(--t2);margin-bottom:3px;">PJM RTO Instantaneous Load${ts?' @ '+ts:''}</div>
-    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
-      <div style="font-size:26px;font-weight:500;color:${col};">${(mw/1000).toFixed(1)}k MW</div>
-      ${chgHtml}
+  el.innerHTML=`<div class="load-wrap">
+    <div style="font-size:10px;color:var(--t2);margin-bottom:2px;">PJM RTO Instantaneous${ts?' @ '+ts:''}</div>
+    <div style="display:flex;align-items:baseline;gap:8px;">
+      <span style="font-size:26px;font-weight:500;color:${col};">${(mw/1000).toFixed(1)}k MW</span>
+      ${chg?`<span style="font-size:11px;color:${chg>0?'var(--red)':'var(--green)'}">${chg>0?'+':''}${(chg/1000).toFixed(1)}k MW</span>`:''}
     </div>
-    <div style="margin-top:8px;">
-      <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
-        <div style="height:100%;width:${Math.min((mw/150000)*100,100).toFixed(0)}%;background:${col};border-radius:3px;"></div>
-      </div>
-      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--t3);margin-top:3px;">
-        <span>0</span><span>75k</span><span>100k</span><span>125k</span><span>150k MW</span>
-      </div>
-    </div>
+    <div class="load-gauge"><div class="load-fill" style="width:${Math.min((mw/150000)*100,100).toFixed(0)}%;background:${col};"></div></div>
+    <div class="load-scale"><span>0</span><span>75k</span><span>100k</span><span>125k</span><span>150k MW</span></div>
   </div>`;
 }
 
-function renderPreds(markets){
-  const el=document.getElementById('pred-list');
-  document.getElementById('pred-cnt').textContent=markets.length;
-  if(!markets.length){el.innerHTML='<div class="loading">No energy markets found.</div>';return;}
-  el.innerHTML=markets.map(m=>{
-    const opts=(m.outcomes||[]).map(o=>`<div class="prow">
-      <span class="plabel">${o.label}</span>
-      <div class="barbg"><div class="barfill" style="width:${o.pct}%;background:${o.label==='Yes'?'#639922':'#E24B4A'};"></div></div>
-      <span class="ppct" style="color:${o.label==='Yes'?'var(--green)':'var(--red)'};">${o.pct}%</span>
-    </div>`).join('');
-    const vol=m.volume?`$${Number(m.volume).toLocaleString(undefined,{maximumFractionDigits:0})}`:'';
-    return `<div class="pi"><div class="pi-title">${m.question}</div>
-      <div class="pi-meta">${vol}${m.end_date?' · Ends '+m.end_date:''} · <a href="${m.url}" target="_blank">Polymarket ↗</a></div>${opts}</div>`;
+function renderFuelMix(fuelMix){
+  const el=document.getElementById('fuel-panel');
+  if(!fuelMix||!fuelMix.length){
+    el.innerHTML='<div class="loading" style="font-size:11px;padding:10px;">Fuel mix data unavailable</div>';
+    return;
+  }
+  const total=fuelMix.reduce((s,f)=>s+f.mw,0);
+  const COLORS={'Gas':'#EF9F27','Natural Gas':'#EF9F27','Nuclear':'#85B7EB','Coal':'#a09e96',
+                'Wind':'#97C459','Solar':'#FFD966','Hydro':'#5BCEFA','Other':'#585752',
+                'Oil':'#F09595','Pumped Storage':'#C3A6FF'};
+  const sorted=fuelMix.sort((a,b)=>b.mw-a.mw);
+  el.innerHTML=sorted.map(f=>{
+    const pct=total>0?((f.mw/total)*100).toFixed(1):0;
+    const col=COLORS[f.fuel]||COLORS['Other'];
+    return `<div class="fuel-row">
+      <span class="fuel-label">${f.fuel}</span>
+      <div class="fuel-bg"><div class="fuel-fill" style="width:${pct}%;background:${col};"></div></div>
+      <span class="fuel-pct">${pct}%</span>
+      <span class="fuel-mw">${fmtK(f.mw)} MW</span>
+    </div>`;
+  }).join('');
+}
+
+function renderOutages(outages){
+  const el=document.getElementById('outage-panel');
+  const fc=outages?.forecast||[];
+  if(!fc.length){
+    el.innerHTML='<div class="loading" style="font-size:11px;padding:10px;">Outage forecast unavailable</div>';
+    return;
+  }
+  const maxMW=Math.max(...fc.map(r=>r.mw));
+  el.innerHTML=fc.map(r=>{
+    const pct=maxMW>0?((r.mw/maxMW)*100).toFixed(0):0;
+    const col=r.mw>40000?'var(--red)':r.mw>25000?'var(--amber)':'var(--t3)';
+    return `<div class="otrow">
+      <span class="otdate">${r.date}</span>
+      <div class="otbg"><div class="otfill" style="width:${pct}%;background:${col};"></div></div>
+      <span class="otmw" style="color:${col};">${fmtK(r.mw)} MW</span>
+    </div>`;
   }).join('');
 }
 
@@ -348,23 +362,26 @@ async function loadAll(){
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const d=await res.json();
 
-    // DA LMPs — build map first, then render table
+    // Build DA map
     daMap={};
     if(d.da&&d.da.length){
       d.da.forEach(row=>{
         if(row.name&&row.lmp){
-          const key = row.name.toUpperCase().trim().replace(/\s+/g,' ');
-          daMap[key]={lmp:row.lmp,energy:row.energy||0,cong:row.cong||0};
+          daMap[row.name.toUpperCase().trim()]={lmp:row.lmp,energy:row.energy||0,cong:row.cong||0};
         }
       });
     }
 
     if(d.lmps&&d.lmps.length){renderMetrics(d.lmps);renderTable(d.lmps);}
+    else document.getElementById('metric-grid').innerHTML='<div style="grid-column:1/-1;padding:10px;color:var(--red);font-size:12px;">No LMP data. Check PJM API key.</div>';
+
     if(d.intraday&&d.intraday.length) renderIntraday(d.intraday);
-    renderGas(d.gas||[]);
+    renderEnergy(d.sys_energy||{}, d.lmps||[]);
     renderLoad(d.load||{});
-    renderPreds(d.markets||[]);
+    renderFuelMix(d.fuel_mix||[]);
+    renderOutages(d.outages||{});
     renderNews(d.news||[]);
+
     setStatus('live');
     document.getElementById('last-updated').textContent='Updated: '+new Date(d.updated_at).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+' ET';
   }catch(err){
