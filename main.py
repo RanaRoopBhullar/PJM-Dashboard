@@ -1,9 +1,9 @@
 """
-PJM Power Dashboard — Backend Server (Final Clean Version)
-All field names verified from live API.
+PJM Power Dashboard — Backend (Production)
+Verified field names, robust error handling, clean data.
 """
 
-import os, httpx, asyncio, xml.etree.ElementTree as ET, json
+import os, httpx, asyncio, xml.etree.ElementTree as ET, json, re
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -140,27 +140,26 @@ async def fetch_load() -> dict:
     if current > 1000: cache_set("load", result)
     return result
 
-# ── Gas Prices (EIA) ──────────────────────────────────────────
+# ── Gas Prices ────────────────────────────────────────────────
 async def fetch_gas() -> list:
     cached = cache_get("gas", 3600)
     if cached: return cached
     prices = []
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            # Try EIA v1 API (older but more permissive)
             r = await c.get("https://api.eia.gov/series/",
                 params={"api_key":"DEMO_KEY","series_id":"NG.RNGWHHD.D","num":"1"})
             if r.status_code == 200:
                 series = r.json().get("series",[])
                 if series and series[0].get("data"):
                     pt = series[0]["data"][0]
-                    prices.append({"hub":"Henry Hub","date":str(pt[0]),
-                                   "price":round(float(pt[1]),3),"unit":"$/MMBtu"})
+                    if float(pt[1]) > 0:
+                        prices.append({"hub":"Henry Hub","date":str(pt[0]),
+                                       "price":round(float(pt[1]),3),"unit":"$/MMBtu"})
     except Exception: pass
     if not prices:
         try:
             async with httpx.AsyncClient(timeout=15) as c:
-                # Try EIA v2 monthly
                 r = await c.get("https://api.eia.gov/v2/natural-gas/pri/sum/data/",
                     params={"api_key":"DEMO_KEY","frequency":"monthly","data[0]":"value",
                             "facets[series][]":"RNGWHHD","sort[0][column]":"period",
@@ -169,18 +168,85 @@ async def fetch_gas() -> list:
                     rows = r.json().get("response",{}).get("data",[])
                     if rows and float(rows[0].get("value") or 0) > 0:
                         prices.append({"hub":"Henry Hub","date":rows[0].get("period",""),
-                                       "price":round(float(rows[0]["value"]),3),"unit":"$/MMBtu (monthly avg)"})
+                                       "price":round(float(rows[0]["value"]),3),
+                                       "unit":"$/MMBtu (monthly avg)"})
         except Exception: pass
     if not prices:
         prices = [{"hub":"Henry Hub","date":"—","price":0,"unit":"$/MMBtu"}]
     cache_set("gas", prices)
     return prices
 
+# ── Prediction Markets ────────────────────────────────────────
+# Strict energy-only keywords — must appear as whole words or phrases
+ENERGY_PHRASES = [
+    "natural gas price", "crude oil", "oil price", "brent", "wti",
+    "henry hub", "natural gas production", "lng", "opec",
+    "electricity price", "power price", "energy price",
+    "nuclear power", "nuclear plant", "coal production",
+    "renewable energy", "solar energy", "wind energy",
+    "barrel of oil", "oil production", "gas production",
+    "pipeline", "refinery", "energy crisis",
+    "pjm", "ercot", "miso", "power grid",
+    "carbon price", "carbon credit", "carbon tax",
+]
+
+def is_energy_market(question: str) -> bool:
+    q = question.lower()
+    return any(phrase in q for phrase in ENERGY_PHRASES)
+
+async def fetch_polymarket() -> list:
+    cached = cache_get("polymarket", 600)  # 10 min cache
+    if cached: return cached
+
+    results = []
+    seen_ids = set()
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            # Fetch large batch and filter strictly
+            # Polymarket doesn't support server-side search reliably
+            # so we fetch 500 sorted by volume and filter client-side
+            r = await c.get("https://gamma-api.polymarket.com/markets",
+                params={"closed":"false","limit":500,"order":"volume","ascending":"false",
+                        "active":"true"})
+            if r.status_code != 200:
+                cache_set("polymarket", [])
+                return []
+            markets = r.json()
+
+            for m in markets:
+                q   = (m.get("question") or m.get("title") or "")
+                uid = m.get("id") or m.get("slug") or q[:50]
+                if uid in seen_ids: continue
+                if not is_energy_market(q): continue
+                seen_ids.add(uid)
+                outcomes = []
+                try:
+                    prices = json.loads(m.get("outcomePrices") or "[]")
+                    names  = json.loads(m.get("outcomes") or "[]")
+                    for name, price in zip(names, prices):
+                        outcomes.append({"label":name,"pct":round(float(price)*100,1)})
+                except Exception: pass
+                vol_raw = m.get("volume") or m.get("volumeNum") or "0"
+                results.append({
+                    "question": q,
+                    "volume":   vol_raw,
+                    "end_date": (m.get("endDate") or m.get("endDateIso") or "")[:10],
+                    "url":      f"https://polymarket.com/event/{m.get('slug','')}",
+                    "outcomes": outcomes,
+                })
+                if len(results) >= 8: break
+
+    except Exception: pass
+
+    cache_set("polymarket", results)
+    return results
+
 # ── News ──────────────────────────────────────────────────────
 ENERGY_KW = ["power","energy","electricity","grid","lmp","capacity","natural gas","coal",
              "solar","wind","pjm","ferc","megawatt","mw","transmission","congestion",
              "renewable","nuclear","generation","utility","outage","demand","load",
-             "curtailment","emergency","alert","market","rate","tariff","fuel","price"]
+             "curtailment","emergency","alert","market","tariff","fuel","pipeline"]
 
 async def fetch_news() -> list:
     cached = cache_get("news", 300)
@@ -189,7 +255,7 @@ async def fetch_news() -> list:
     articles = []
 
     async with httpx.AsyncClient(timeout=20) as c:
-        # LMP alerts
+        # 1. LMP alerts
         try:
             lmps = cache_get("lmps", 300) or await fetch_lmps()
             high = [h for h in lmps if h["lmp"] > 80]
@@ -212,15 +278,14 @@ async def fetch_news() -> list:
                 })
         except Exception: pass
 
-        # DA/RT spread
+        # 2. DA/RT spread
         try:
             da   = cache_get("da_lmps", 1800) or await fetch_da_lmps()
             lmps = cache_get("lmps", 300) or []
             if da and lmps:
                 spreads = []
                 for h in lmps:
-                    name = h["name"].upper().strip()
-                    da_e = da.get(name)
+                    da_e = da.get(h["name"].upper().strip())
                     if da_e:
                         sp = round(h["lmp"] - da_e["lmp"], 2)
                         spreads.append((h["name"], h["lmp"], da_e["lmp"], sp))
@@ -236,7 +301,7 @@ async def fetch_news() -> list:
                     })
         except Exception: pass
 
-        # Load level
+        # 3. Load level
         try:
             load = cache_get("load", 120) or await fetch_load()
             mw   = load.get("current_mw", 0)
@@ -247,16 +312,17 @@ async def fetch_news() -> list:
                 articles.append({
                     "source":"PJM Load","category":"📊 Market",
                     "title":f"{icon} System Load: {mw/1000:.1f}k MW — {level}",
-                    "snippet":f"PJM RTO instantaneous load: {mw:,.0f} MW" + (f" ({chg:+,.0f} MW vs prev interval)" if chg else ""),
+                    "snippet":f"PJM RTO: {mw:,.0f} MW" + (f" ({chg:+,.0f} MW vs prev)" if chg else ""),
                     "pub":load.get("timestamp","")[:16],
                     "url":"https://dataminer2.pjm.com/feed/inst_load",
                 })
         except Exception: pass
 
-        # Forecasted outages
+        # 4. Forecasted outages
         try:
             r = await c.get(f"{PJM_BASE}/frcstd_gen_outages",
-                params={"rowCount":"3","startRow":"1","datetime_beginning_ept":"Today","order":"Asc","sort":"datetime_beginning_ept"},
+                params={"rowCount":"3","startRow":"1","datetime_beginning_ept":"Today",
+                        "order":"Asc","sort":"datetime_beginning_ept"},
                 headers=pjm_h())
             if r.status_code == 200:
                 for item in r.json().get("items",[])[:2]:
@@ -271,7 +337,7 @@ async def fetch_news() -> list:
                         })
         except Exception: pass
 
-    # PJM + FERC RSS
+    # 5. PJM + FERC RSS (confirmed accessible from Railway)
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as rss:
             for src, url, cat in [
@@ -298,66 +364,6 @@ async def fetch_news() -> list:
     articles.sort(key=lambda x: ORDER.get(x.get("category","📰 News"),3))
     cache_set("news", articles[:20])
     return articles[:20]
-
-# ── Polymarket — energy only, strict filter ───────────────────
-# Only show if question explicitly mentions energy/power/oil/gas commodities
-# Weather only if mentions North American grid regions
-ENERGY_EXACT = ["electricity","natural gas","crude oil","oil price","gas price","lng",
-                "megawatt","nuclear power","coal","solar energy","wind energy","pipeline",
-                "carbon price","emissions","energy crisis","power grid","electric grid",
-                "barrel","opec","refinery","energy price","pjm","ercot","power market"]
-WEATHER_NA   = ["texas heat","chicago heat","us heat","east coast heat","midwest heat",
-                "gulf coast","hurricane texas","hurricane florida","hurricane louisiana",
-                "new york temperature","chicago temperature","texas temperature",
-                "florida temperature","california temperature"]
-
-async def fetch_polymarket() -> list:
-    cached = cache_get("polymarket", 300)
-    if cached: return cached
-
-    results = []
-    seen = set()
-
-    # Search specific energy terms directly
-    search_terms = ["oil","natural gas","electricity","energy","crude","nuclear","coal","solar","wind","LNG","OPEC","pipeline","carbon"]
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            for term in search_terms:
-                if len(results) >= 8: break
-                try:
-                    r = await c.get("https://gamma-api.polymarket.com/markets",
-                                    params={"closed":"false","limit":10,"order":"volume",
-                                            "ascending":"false","search":term})
-                    if r.status_code != 200: continue
-                    markets = r.json()
-                    for m in markets:
-                        q = (m.get("question") or m.get("title") or "")
-                        uid = m.get("id") or m.get("slug") or q[:40]
-                        if uid in seen: continue
-                        # Must actually mention the energy term
-                        if term.lower() not in q.lower(): continue
-                        seen.add(uid)
-                        outcomes = []
-                        try:
-                            prices = json.loads(m.get("outcomePrices") or "[]")
-                            names  = json.loads(m.get("outcomes") or "[]")
-                            for name, price in zip(names, prices):
-                                outcomes.append({"label":name,"pct":round(float(price)*100,1)})
-                        except Exception: pass
-                        results.append({
-                            "question": q,
-                            "volume":   m.get("volume","—"),
-                            "end_date": (m.get("endDate") or "")[:10],
-                            "url":      f"https://polymarket.com/event/{m.get('slug','')}",
-                            "outcomes": outcomes,
-                        })
-                        if len(results) >= 8: break
-                except Exception: continue
-    except Exception: pass
-
-    cache_set("polymarket", results)
-    return results
 
 # ── Routes ────────────────────────────────────────────────────
 @app.get("/api/lmps")
@@ -393,17 +399,19 @@ async def api_news():
 
 @app.get("/api/debug/polymarket")
 async def debug_polymarket():
+    """Shows what Polymarket returns and what passes our energy filter."""
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.get("https://gamma-api.polymarket.com/markets",
-                            params={"closed":"false","limit":30,"order":"volume","ascending":"false"})
+                params={"closed":"false","limit":100,"order":"volume","ascending":"false","active":"true"})
         if r.status_code != 200:
             return JSONResponse({"status":r.status_code,"error":r.text[:200]})
         markets = r.json()
-        return JSONResponse({
-            "count": len(markets),
-            "top_questions": [(m.get("question") or m.get("title",""))[:100] for m in markets[:30]]
-        })
+        passing = [(m.get("question") or m.get("title",""))[:100]
+                   for m in markets if is_energy_market(m.get("question") or m.get("title") or "")]
+        all_q   = [(m.get("question") or m.get("title",""))[:80] for m in markets[:30]]
+        return JSONResponse({"total_fetched":len(markets),"energy_matches":len(passing),
+                             "passing_markets":passing,"top_30_all":all_q})
     except Exception as e:
         return JSONResponse({"error": str(e)})
 
@@ -431,7 +439,8 @@ async def api_all():
 
 @app.get("/health")
 async def health():
-    return {"status":"ok","pjm_key_set":bool(PJM_API_KEY),"key_prefix":PJM_API_KEY[:6]+"..." if PJM_API_KEY else ""}
+    return {"status":"ok","pjm_key_set":bool(PJM_API_KEY),
+            "key_prefix":PJM_API_KEY[:6]+"..." if PJM_API_KEY else ""}
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
