@@ -314,32 +314,48 @@ WEATHER_NA   = ["texas heat","chicago heat","us heat","east coast heat","midwest
 async def fetch_polymarket() -> list:
     cached = cache_get("polymarket", 300)
     if cached: return cached
+
+    results = []
+    seen = set()
+
+    # Search specific energy terms directly
+    search_terms = ["oil","natural gas","electricity","energy","crude","nuclear","coal","solar","wind","LNG","OPEC","pipeline","carbon"]
+
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get("https://gamma-api.polymarket.com/markets",
-                            params={"closed":"false","limit":500,"order":"volume","ascending":"false"})
-            r.raise_for_status()
-            markets = r.json()
-    except Exception:
-        return []
-    results = []
-    for m in markets:
-        q = (m.get("question") or m.get("title") or "").lower()
-        is_energy_market = any(k in q for k in ENERGY_EXACT)
-        is_na_weather    = any(k in q for k in WEATHER_NA)
-        if not (is_energy_market or is_na_weather):
-            continue
-        outcomes = []
-        try:
-            prices = json.loads(m.get("outcomePrices") or "[]")
-            names  = json.loads(m.get("outcomes") or "[]")
-            for name, price in zip(names, prices):
-                outcomes.append({"label":name,"pct":round(float(price)*100,1)})
-        except Exception: pass
-        results.append({"question":m.get("question") or m.get("title"),
-                         "volume":m.get("volume","—"),"end_date":(m.get("endDate") or "")[:10],
-                         "url":f"https://polymarket.com/event/{m.get('slug','')}","outcomes":outcomes})
-        if len(results) >= 8: break
+            for term in search_terms:
+                if len(results) >= 8: break
+                try:
+                    r = await c.get("https://gamma-api.polymarket.com/markets",
+                                    params={"closed":"false","limit":10,"order":"volume",
+                                            "ascending":"false","search":term})
+                    if r.status_code != 200: continue
+                    markets = r.json()
+                    for m in markets:
+                        q = (m.get("question") or m.get("title") or "")
+                        uid = m.get("id") or m.get("slug") or q[:40]
+                        if uid in seen: continue
+                        # Must actually mention the energy term
+                        if term.lower() not in q.lower(): continue
+                        seen.add(uid)
+                        outcomes = []
+                        try:
+                            prices = json.loads(m.get("outcomePrices") or "[]")
+                            names  = json.loads(m.get("outcomes") or "[]")
+                            for name, price in zip(names, prices):
+                                outcomes.append({"label":name,"pct":round(float(price)*100,1)})
+                        except Exception: pass
+                        results.append({
+                            "question": q,
+                            "volume":   m.get("volume","—"),
+                            "end_date": (m.get("endDate") or "")[:10],
+                            "url":      f"https://polymarket.com/event/{m.get('slug','')}",
+                            "outcomes": outcomes,
+                        })
+                        if len(results) >= 8: break
+                except Exception: continue
+    except Exception: pass
+
     cache_set("polymarket", results)
     return results
 
