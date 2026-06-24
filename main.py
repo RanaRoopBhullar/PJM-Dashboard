@@ -463,7 +463,30 @@ async def api_all():
         "updated_at":   datetime.now(timezone.utc).isoformat(),
     })
 
-@app.get("/health")
+@app.get("/api/nettest")
+async def nettest():
+    results = {}
+    tests = [
+        ("yahoo_ng", "https://query1.finance.yahoo.com/v8/finance/chart/NG%3DF?interval=1d&range=1d"),
+        ("yahoo_ng_v7", "https://query2.finance.yahoo.com/v7/finance/quote?symbols=NG%3DF"),
+        ("eia_v2", "https://api.eia.gov/v2/natural-gas/pri/sum/data/?api_key=DEMO_KEY&frequency=monthly&data[0]=value&facets[series][]=RNGWHHD&length=1"),
+        ("eia_v1", "https://api.eia.gov/series/?api_key=DEMO_KEY&series_id=NG.RNGWHHD.D&num=1"),
+        ("fred", "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DHHNGSP"),
+        ("nasdaq_data", "https://data.nasdaq.com/api/v3/datasets/CME/NG1.json?rows=1&api_key=DEMO"),
+        ("twelvedata", "https://api.twelvedata.com/price?symbol=NG%2FUSD&interval=1day&apikey=demo"),
+        ("polymarket", "https://gamma-api.polymarket.com/markets?limit=1"),
+    ]
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as c:
+        for name, url in tests:
+            try:
+                r = await c.get(url, headers={"User-Agent":"Mozilla/5.0 Chrome/120"})
+                results[name] = {"status": r.status_code, "len": len(r.text),
+                                 "preview": r.text[:150] if r.status_code==200 else ""}
+            except Exception as e:
+                results[name] = {"error": str(e)[:80]}
+    return JSONResponse(results)
+
+
 async def health():
     return {"status":"ok","pjm_key_set":bool(PJM_API_KEY),
             "key_prefix":PJM_API_KEY[:6]+"..." if PJM_API_KEY else ""}
