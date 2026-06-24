@@ -487,6 +487,7 @@ async def nettest():
     return JSONResponse(results)
 
 
+@app.get("/health")
 async def health():
     return {"status":"ok","pjm_key_set":bool(PJM_API_KEY),
             "key_prefix":PJM_API_KEY[:6]+"..." if PJM_API_KEY else ""}
