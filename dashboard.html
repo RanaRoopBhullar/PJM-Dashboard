@@ -134,7 +134,7 @@ a:hover{text-decoration:underline;}
 
   <!-- System Energy / Gas Proxy -->
   <div class="panel">
-    <div class="ph"><i class="ti ti-flame" style="font-size:13px;"></i> System Energy Price <a href="https://dataminer2.pjm.com/feed/rt_unverified_hrl_lmps" target="_blank" class="obtn">PJM ↗</a></div>
+    <div class="ph"><i class="ti ti-flame" style="font-size:13px;"></i> Natural Gas · System Energy <a href="https://www.eia.gov/naturalgas/weekly/" target="_blank" class="obtn">EIA ↗</a></div>
     <div id="energy-panel"><div class="loading">Loading…</div></div>
   </div>
 
@@ -258,19 +258,33 @@ function renderIntraday(intraday){
   }});
 }
 
-function renderEnergy(sysEnergy, lmps){
+function renderEnergy(gas, sysEnergy, lmps){
   const el=document.getElementById('energy-panel');
-  // Use system energy price from LMP data
-  const price = sysEnergy?.price || (lmps.length ? lmps[0].energy : 0);
-  const hour  = sysEnergy?.hour  || (lmps.length ? lmps[0].hour  : '');
-  const ts    = hour ? new Date(hour).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+' ET' : '';
-  const col   = price>50?'var(--red)':price>35?'var(--amber)':'var(--green)';
-  el.innerHTML=`<div class="energy-card">
-    <div style="font-size:10px;color:var(--t2);margin-bottom:3px;">RT System Marginal Energy Cost${ts?' @ '+ts:''}</div>
-    <div class="energy-val" style="color:${col};">$${fmt(price)}<span style="font-size:13px;color:var(--t3);font-weight:400;">/MWh</span></div>
-    <div class="energy-sub">Systemwide marginal cost of energy — closely tracks gas prices.<br>
-    For Henry Hub: <a href="https://www.eia.gov/naturalgas/weekly/" target="_blank">EIA.gov ↗</a></div>
-  </div>`;
+  // Prefer Henry Hub gas price if available
+  const gasData = gas && gas.length && gas[0].price > 0 ? gas[0] : null;
+  const sysPrice = sysEnergy?.price || (lmps.length ? lmps[0].energy : 0);
+  const sysHour  = sysEnergy?.hour  || (lmps.length ? lmps[0].hour  : '');
+  const sysTsStr = sysHour ? ' @ '+new Date(sysHour).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+' ET' : '';
+
+  if(gasData){
+    const col = gasData.price>4?'var(--red)':gasData.price>3?'var(--amber)':'var(--green)';
+    el.innerHTML=`<div class="energy-card">
+      <div style="font-size:10px;color:var(--t2);margin-bottom:3px;">Henry Hub Natural Gas Spot · ${gasData.date}</div>
+      <div class="energy-val" style="color:${col};">$${gasData.price.toFixed(3)}<span style="font-size:13px;color:var(--t3);font-weight:400;">/MMBtu</span></div>
+      <div style="margin-top:8px;padding-top:8px;border-top:.5px solid var(--border);">
+        <div style="font-size:10px;color:var(--t2);margin-bottom:2px;">PJM System λ${sysTsStr}</div>
+        <div style="font-size:16px;font-weight:500;">$${fmt(sysPrice)}<span style="font-size:11px;color:var(--t3);"> /MWh</span></div>
+      </div>
+    </div>`;
+  } else {
+    const col = sysPrice>50?'var(--red)':sysPrice>35?'var(--amber)':'var(--green)';
+    const note = gas && gas.length && gas[0].note ? gas[0].note : 'Add EIA_API_KEY to Railway for Henry Hub price';
+    el.innerHTML=`<div class="energy-card">
+      <div style="font-size:10px;color:var(--t2);margin-bottom:3px;">PJM System λ (Marginal Energy Cost)${sysTsStr}</div>
+      <div class="energy-val" style="color:${col};">$${fmt(sysPrice)}<span style="font-size:13px;color:var(--t3);font-weight:400;">/MWh</span></div>
+      <div class="energy-sub" style="margin-top:6px;">Henry Hub: <a href="https://www.eia.gov/naturalgas/weekly/" target="_blank">EIA.gov ↗</a> · ${note}</div>
+    </div>`;
+  }
 }
 
 function renderLoad(load){
@@ -376,7 +390,7 @@ async function loadAll(){
     else document.getElementById('metric-grid').innerHTML='<div style="grid-column:1/-1;padding:10px;color:var(--red);font-size:12px;">No LMP data. Check PJM API key.</div>';
 
     if(d.intraday&&d.intraday.length) renderIntraday(d.intraday);
-    renderEnergy(d.sys_energy||{}, d.lmps||[]);
+    renderEnergy(d.gas||[], d.sys_energy||{}, d.lmps||[]);
     renderLoad(d.load||{});
     renderFuelMix(d.fuel_mix||[]);
     renderOutages(d.outages||{});
