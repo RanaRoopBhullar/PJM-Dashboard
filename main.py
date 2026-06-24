@@ -248,7 +248,35 @@ ENERGY_KW = ["power","energy","electricity","grid","lmp","capacity","natural gas
              "renewable","nuclear","generation","utility","outage","demand","load",
              "curtailment","emergency","alert","market","tariff","fuel","pipeline"]
 
-async def fetch_news() -> list:
+EIA_API_KEY = os.getenv("EIA_API_KEY", "")
+
+async def fetch_gas() -> list:
+    """Henry Hub daily spot price from EIA. Requires EIA_API_KEY env var (free at eia.gov/opendata)."""
+    cached = cache_get("gas", 3600)
+    if cached: return cached
+    if not EIA_API_KEY:
+        return [{"hub":"Henry Hub","date":"—","price":0,"unit":"$/MMBtu","note":"Add EIA_API_KEY to Railway Variables"}]
+    prices = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get("https://api.eia.gov/v2/natural-gas/pri/sum/data/",
+                params={"api_key":EIA_API_KEY,"frequency":"daily","data[0]":"value",
+                        "facets[series][]":"RNGWHHD","sort[0][column]":"period",
+                        "sort[0][direction]":"desc","length":"2"})
+            if r.status_code == 200:
+                rows = r.json().get("response",{}).get("data",[])
+                for row in rows[:1]:
+                    val = float(row.get("value") or 0)
+                    if val > 0:
+                        prices.append({"hub":"Henry Hub","date":row.get("period",""),
+                                       "price":round(val,3),"unit":"$/MMBtu"})
+    except Exception: pass
+    if not prices:
+        prices = [{"hub":"Henry Hub","date":"—","price":0,"unit":"$/MMBtu"}]
+    cache_set("gas", prices)
+    return prices
+
+
     cached = cache_get("news", 600)
     if cached: return cached
     if not PJM_API_KEY: return []
@@ -397,6 +425,11 @@ async def api_outages():
     try:    return JSONResponse(await fetch_outages())
     except Exception as e: raise HTTPException(500, str(e))
 
+@app.get("/api/gas")
+async def api_gas():
+    try:    return JSONResponse(await fetch_gas())
+    except Exception as e: raise HTTPException(500, str(e))
+
 @app.get("/api/news")
 async def api_news():
     try:    return JSONResponse(await fetch_news())
@@ -437,9 +470,9 @@ async def api_all():
     )
     await asyncio.sleep(0.5)
 
-    # Batch 3: Supplementary data (fuel mix + load forecast)
-    fuel_mix, load_fc = await asyncio.gather(
-        fetch_fuel_mix(), fetch_load_forecast(),
+    # Batch 3: Supplementary (fuel mix, load forecast, gas — gas uses EIA not PJM so safe to batch)
+    fuel_mix, load_fc, gas = await asyncio.gather(
+        fetch_fuel_mix(), fetch_load_forecast(), fetch_gas(),
         return_exceptions=True,
     )
 
@@ -458,6 +491,7 @@ async def api_all():
         "fuel_mix":     fuel_mix    if not isinstance(fuel_mix,   Exception) else [],
         "load_forecast":load_fc     if not isinstance(load_fc,    Exception) else [],
         "outages":      outages     if not isinstance(outages,    Exception) else {},
+        "gas":          gas         if not isinstance(gas,        Exception) else [],
         "sys_energy":   sys_energy  or {},
         "news":         news        if not isinstance(news,       Exception) else [],
         "updated_at":   datetime.now(timezone.utc).isoformat(),
