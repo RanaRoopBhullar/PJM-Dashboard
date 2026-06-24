@@ -153,7 +153,7 @@ async def fetch_load() -> dict:
 # ── Generation Fuel Mix ───────────────────────────────────────
 async def fetch_fuel_mix() -> list:
     """Try multiple PJM generation by fuel type feeds."""
-    cached = cache_get("fuel_mix", 300)
+    cached = cache_get("fuel_mix", 600)  # 10 min to avoid rate limiting
     if cached: return cached
     if not PJM_API_KEY: return []
 
@@ -192,33 +192,30 @@ async def fetch_load_forecast() -> list:
     if cached: return cached
     if not PJM_API_KEY: return []
 
-    feeds_to_try = ["load_frcstd_7day", "load_forecast_7day",
-                    "load_frcstd_7_day", "short_load_forecast"]
     async with httpx.AsyncClient(timeout=20) as c:
-        for feed in feeds_to_try:
-            try:
-                r = await c.get(f"{PJM_BASE}/{feed}",
-                    params={"rowCount":"48","startRow":"1",
-                            "datetime_beginning_ept":"Today",
-                            "order":"Asc","sort":"datetime_beginning_ept"},
-                    headers=pjm_h())
-                if r.status_code == 200:
-                    items = r.json().get("items",[])
-                    if items:
-                        result = []
-                        for row in items:
-                            hr = row.get("datetime_beginning_ept","")
-                            # Try all known MW field names
-                            mw = float(row.get("rto_total") or row.get("total_load_forecast") or
-                                       row.get("load_forecast_rto") or row.get("forecast_load_mw") or
-                                       row.get("rto_forecast") or row.get("mw") or 0)
-                            if mw > 0:
-                                result.append({"hour":hr,"mw":mw})
-                        if result:
-                            cache_set("load_forecast", result)
-                            return result
-            except Exception:
-                continue
+        try:
+            # Confirmed correct feed: load_frcstd_7_day, field: forecast_load_mw
+            r = await c.get(f"{PJM_BASE}/load_frcstd_7_day",
+                params={"rowCount":"48","startRow":"1",
+                        "forecast_area":"RTO_COMBINED",
+                        "datetime_beginning_ept":"Today",
+                        "order":"Asc","sort":"forecast_datetime_beginning_utc"},
+                headers=pjm_h())
+            if r.status_code == 200:
+                items = r.json().get("items",[])
+                result = []
+                for row in items:
+                    hr = (row.get("forecast_datetime_beginning_utc") or
+                          row.get("datetime_beginning_ept") or
+                          row.get("datetime_beginning_utc") or "")
+                    mw = float(row.get("forecast_load_mw") or row.get("rto_total") or 0)
+                    if mw > 0:
+                        result.append({"hour":hr,"mw":mw})
+                if result:
+                    cache_set("load_forecast", result)
+                    return result
+        except Exception:
+            pass
     return []
 
 # ── Outages ───────────────────────────────────────────────────
@@ -410,8 +407,7 @@ async def debug_feeds():
     """Debug all PJM feeds to find correct names."""
     if not PJM_API_KEY: return JSONResponse({"error":"no key"})
     results = {}
-    feeds = ["gen_by_fuel","inst_gen_by_fuel","generation_by_fuel_type","rt_gen_by_fuel",
-             "fuel_mix","load_frcstd_7day","load_forecast_7day","short_load_forecast"]
+    feeds = ["gen_by_fuel","load_frcstd_7_day","inst_load","frcstd_gen_outages","da_hrl_lmps"]
     async with httpx.AsyncClient(timeout=15) as c:
         for feed in feeds:
             r = await c.get(f"{PJM_BASE}/{feed}",
