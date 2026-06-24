@@ -38,7 +38,7 @@ PJM_HUBS = [
 
 # ── RT LMPs ───────────────────────────────────────────────────
 async def fetch_lmps() -> list:
-    cached = cache_get("lmps", 300)
+    cached = cache_get("lmps", 600)
     if cached: return cached
     if not PJM_API_KEY: raise HTTPException(503, "PJM_API_KEY not configured")
     async with httpx.AsyncClient(timeout=30) as c:
@@ -86,7 +86,7 @@ async def fetch_lmps() -> list:
 
 # ── DA LMPs ───────────────────────────────────────────────────
 async def fetch_da_lmps() -> dict:
-    cached = cache_get("da_lmps", 1800)
+    cached = cache_get("da_lmps", 3600)
     if cached: return cached
     if not PJM_API_KEY: return {}
     async with httpx.AsyncClient(timeout=20) as c:
@@ -109,7 +109,7 @@ async def fetch_da_lmps() -> dict:
 
 # ── Intraday ──────────────────────────────────────────────────
 async def fetch_intraday() -> list:
-    cached = cache_get("intraday", 300)
+    cached = cache_get("intraday", 600)
     if cached: return cached
     if not PJM_API_KEY: return []
     async with httpx.AsyncClient(timeout=20) as c:
@@ -125,7 +125,7 @@ async def fetch_intraday() -> list:
 
 # ── Instantaneous Load ────────────────────────────────────────
 async def fetch_load() -> dict:
-    cached = cache_get("load", 120)
+    cached = cache_get("load", 300)
     if cached: return cached
     if not PJM_API_KEY: return {}
     async with httpx.AsyncClient(timeout=20) as c:
@@ -153,7 +153,7 @@ async def fetch_load() -> dict:
 # ── Generation Fuel Mix ───────────────────────────────────────
 async def fetch_fuel_mix() -> list:
     """Try multiple PJM generation by fuel type feeds."""
-    cached = cache_get("fuel_mix", 600)  # 10 min to avoid rate limiting
+    cached = cache_get("fuel_mix", 1800)  # 30 min
     if cached: return cached
     if not PJM_API_KEY: return []
 
@@ -188,7 +188,7 @@ async def fetch_fuel_mix() -> list:
 # ── Load Forecast ─────────────────────────────────────────────
 async def fetch_load_forecast() -> list:
     """Try multiple PJM load forecast feeds."""
-    cached = cache_get("load_forecast", 600)
+    cached = cache_get("load_forecast", 1800)
     if cached: return cached
     if not PJM_API_KEY: return []
 
@@ -220,7 +220,7 @@ async def fetch_load_forecast() -> list:
 
 # ── Outages ───────────────────────────────────────────────────
 async def fetch_outages() -> dict:
-    cached = cache_get("outages", 600)
+    cached = cache_get("outages", 1800)
     if cached: return cached
     if not PJM_API_KEY: return {}
     async with httpx.AsyncClient(timeout=15) as c:
@@ -249,7 +249,7 @@ ENERGY_KW = ["power","energy","electricity","grid","lmp","capacity","natural gas
              "curtailment","emergency","alert","market","tariff","fuel","pipeline"]
 
 async def fetch_news() -> list:
-    cached = cache_get("news", 300)
+    cached = cache_get("news", 600)
     if cached: return cached
     if not PJM_API_KEY: return []
     articles = []
@@ -257,7 +257,7 @@ async def fetch_news() -> list:
     async with httpx.AsyncClient(timeout=20) as c:
         # 1. LMP spike/negative alerts
         try:
-            lmps = cache_get("lmps", 300) or await fetch_lmps()
+            lmps = cache_get("lmps", 600) or await fetch_lmps()
             high = [h for h in lmps if h["lmp"] > 80]
             low  = [h for h in lmps if h["lmp"] < 0]
             if high:
@@ -280,8 +280,8 @@ async def fetch_news() -> list:
 
         # 2. DA/RT spread
         try:
-            da   = cache_get("da_lmps", 1800) or await fetch_da_lmps()
-            lmps = cache_get("lmps", 300) or []
+            da   = cache_get("da_lmps", 3600) or await fetch_da_lmps()
+            lmps = cache_get("lmps", 600) or []
             if da and lmps:
                 spreads = []
                 for h in lmps:
@@ -303,7 +303,7 @@ async def fetch_news() -> list:
 
         # 3. Load level
         try:
-            load = cache_get("load", 120) or await fetch_load()
+            load = cache_get("load", 300) or await fetch_load()
             mw   = load.get("current_mw", 0)
             if mw > 0:
                 level = "CRITICAL" if mw>130000 else "HIGH" if mw>110000 else "ELEVATED" if mw>90000 else "NORMAL"
@@ -421,13 +421,28 @@ async def debug_feeds():
 
 @app.get("/api/all")
 async def api_all():
-    lmps, intraday, load, da, fuel_mix, load_fc, outages, news = await asyncio.gather(
-        fetch_lmps(), fetch_intraday(), fetch_load(),
-        fetch_da_lmps(), fetch_fuel_mix(), fetch_load_forecast(),
-        fetch_outages(), fetch_news(),
+    # PJM rate limit: 6 calls/minute for non-members
+    # Stagger calls in batches with small delays to avoid 429s
+    # Batch 1: Core price data (most important)
+    lmps, intraday, da = await asyncio.gather(
+        fetch_lmps(), fetch_intraday(), fetch_da_lmps(),
         return_exceptions=True,
     )
-    # System energy price as gas proxy
+    await asyncio.sleep(0.5)
+
+    # Batch 2: Operational data
+    load, outages, news = await asyncio.gather(
+        fetch_load(), fetch_outages(), fetch_news(),
+        return_exceptions=True,
+    )
+    await asyncio.sleep(0.5)
+
+    # Batch 3: Supplementary data (fuel mix + load forecast)
+    fuel_mix, load_fc = await asyncio.gather(
+        fetch_fuel_mix(), fetch_load_forecast(),
+        return_exceptions=True,
+    )
+
     sys_energy = cache_get("system_energy", 300)
 
     da_list = []
